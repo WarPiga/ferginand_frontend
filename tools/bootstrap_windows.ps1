@@ -216,63 +216,230 @@ function Clone-Or-Pull-Repo {
     Write-Ok "Repo cloned to $ProjectDir"
 }
 
+function Read-RequiredValue {
+    param(
+        [string]$Prompt,
+        [string]$CurrentValue = "",
+        [string[]]$InvalidValues = @()
+    )
+
+    while ($true) {
+        if ($CurrentValue -and ($InvalidValues -notcontains $CurrentValue)) {
+            $answer = Read-Host "$Prompt [$CurrentValue]"
+            if ([string]::IsNullOrWhiteSpace($answer)) {
+                $answer = $CurrentValue
+            }
+        } else {
+            $answer = Read-Host $Prompt
+        }
+
+        $answer = ($answer -as [string]).Trim()
+
+        if ([string]::IsNullOrWhiteSpace($answer)) {
+            Write-Warn "This value is required."
+            continue
+        }
+
+        if ($InvalidValues -contains $answer) {
+            Write-Warn "Placeholder value is not allowed. Enter the real value."
+            continue
+        }
+
+        return $answer
+    }
+}
+
+function Read-EnvValue {
+    param(
+        [string]$EnvText,
+        [string]$Key
+    )
+
+    $pattern = "(?m)^\s*$([regex]::Escape($Key))\s*=\s*(.*)\s*$"
+    $match = [regex]::Match($EnvText, $pattern)
+
+    if (-not $match.Success) {
+        return ""
+    }
+
+    return ($match.Groups[1].Value -as [string]).Trim()
+}
+
+function Set-EnvValue {
+    param(
+        [string]$EnvText,
+        [string]$Key,
+        [string]$Value
+    )
+
+    $escapedKey = [regex]::Escape($Key)
+    $line = "$Key=$Value"
+
+    if ($EnvText -match "(?m)^\s*$escapedKey\s*=") {
+        return [regex]::Replace($EnvText, "(?m)^\s*$escapedKey\s*=.*$", $line)
+    }
+
+    if (-not $EnvText.EndsWith("`n")) {
+        $EnvText += "`r`n"
+    }
+
+    return $EnvText + $line + "`r`n"
+}
+
 function Ensure-EnvFile {
     Write-Step "Checking .env"
 
     $envPath = Join-Path $ProjectDir ".env"
     $examplePath = Join-Path $ProjectDir ".env.example"
 
+    $defaultEnv = @"
+FRONTEND_RELAY_URL=wss://ferginand-render.onrender.com/ws
+FRONTEND_USER_TOKEN=ASK_ADMIN_FOR_TOKEN
+FRONTEND_ROLE=user
+FRONTEND_CLIENT_NAME=YOUR_NAME_HERE
+FRONTEND_REQUESTED_BY=YOUR_NAME_HERE
+FRONTEND_SERVER_ID=main
+FRONTEND_AUTO_CONNECT=true
+
+FRONTEND_HOST=127.0.0.1
+FRONTEND_PORT=5050
+FRONTEND_DEBUG=false
+"@
+
     if (-not (Test-Path $envPath)) {
         if (Test-Path $examplePath) {
             Copy-Item $examplePath $envPath
             Write-Warn ".env was missing, so .env.example was copied to .env"
         } else {
-            @"
-FRONTEND_RELAY_URL=wss://your-render-service.onrender.com/ws
-FRONTEND_USER_TOKEN=ask_admin_for_your_personal_token
-FRONTEND_ROLE=user
-FRONTEND_CLIENT_NAME=$env:USERNAME Windows Client
-FRONTEND_REQUESTED_BY=$env:USERNAME
-FRONTEND_SERVER_ID=main
-FRONTEND_AUTO_CONNECT=true
-"@ | Set-Content -Path $envPath -Encoding UTF8
+            $defaultEnv | Set-Content -Path $envPath -Encoding UTF8
             Write-Warn ".env was missing, so a default one was created"
         }
     }
 
     $envText = Get-Content $envPath -Raw
 
-    $needsSetup = $false
-    if ($envText -match "ask_admin_for_your_personal_token") { $needsSetup = $true }
-    if ($envText -match "your-render-service") { $needsSetup = $true }
-    if ($envText -notmatch "FRONTEND_USER_TOKEN\s*=\s*\S+") { $needsSetup = $true }
+    # Force required defaults/keys to exist.
+    $requiredDefaults = [ordered]@{
+        "FRONTEND_RELAY_URL" = "wss://ferginand-render.onrender.com/ws"
+        "FRONTEND_USER_TOKEN" = "ASK_ADMIN_FOR_TOKEN"
+        "FRONTEND_ROLE" = "user"
+        "FRONTEND_CLIENT_NAME" = "YOUR_NAME_HERE"
+        "FRONTEND_REQUESTED_BY" = "YOUR_NAME_HERE"
+        "FRONTEND_SERVER_ID" = "main"
+        "FRONTEND_AUTO_CONNECT" = "true"
+        "FRONTEND_HOST" = "127.0.0.1"
+        "FRONTEND_PORT" = "5050"
+        "FRONTEND_DEBUG" = "false"
+    }
 
-    if ($needsSetup) {
-        Write-Host ""
-        Write-Host "============================================================" -ForegroundColor Yellow
-        Write-Host "ACTION REQUIRED: .env must be configured" -ForegroundColor Yellow
-        Write-Host "============================================================" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "Ask the admin for:"
-        Write-Host "  - FRONTEND_RELAY_URL"
-        Write-Host "  - your personal FRONTEND_USER_TOKEN"
-        Write-Host ""
-        Write-Host "Opening .env now:"
-        Write-Host $envPath
-        Write-Host ""
-
-        notepad $envPath
-
-        Write-Host ""
-        Read-Host "After saving .env in Notepad, press ENTER to continue"
-
-        $envText = Get-Content $envPath -Raw
-        if ($envText -match "ask_admin_for_your_personal_token" -or $envText -match "your-render-service") {
-            Write-Warn ".env still looks incomplete."
-            Write-Warn "The frontend can be installed, but it will not connect until .env is fixed."
+    foreach ($key in $requiredDefaults.Keys) {
+        $current = Read-EnvValue -EnvText $envText -Key $key
+        if ([string]::IsNullOrWhiteSpace($current)) {
+            $envText = Set-EnvValue -EnvText $envText -Key $key -Value $requiredDefaults[$key]
         }
+    }
+
+    $relayUrl = Read-EnvValue -EnvText $envText -Key "FRONTEND_RELAY_URL"
+    $token = Read-EnvValue -EnvText $envText -Key "FRONTEND_USER_TOKEN"
+    $clientName = Read-EnvValue -EnvText $envText -Key "FRONTEND_CLIENT_NAME"
+    $requestedBy = Read-EnvValue -EnvText $envText -Key "FRONTEND_REQUESTED_BY"
+
+    $needsName = (
+        [string]::IsNullOrWhiteSpace($clientName) -or
+        [string]::IsNullOrWhiteSpace($requestedBy) -or
+        $clientName -eq "YOUR_NAME_HERE" -or
+        $requestedBy -eq "YOUR_NAME_HERE"
+    )
+
+    $needsToken = (
+        [string]::IsNullOrWhiteSpace($token) -or
+        $token -eq "ASK_ADMIN_FOR_TOKEN" -or
+        $token -eq "ask_admin_for_your_personal_token"
+    )
+
+    $needsRelay = (
+        [string]::IsNullOrWhiteSpace($relayUrl) -or
+        $relayUrl -match "your-render-service"
+    )
+
+    if ($needsRelay -or $needsName -or $needsToken) {
+        Write-Host ""
+        Write-Host "============================================================" -ForegroundColor Yellow
+        Write-Host "ACTION REQUIRED: Client setup" -ForegroundColor Yellow
+        Write-Host "============================================================" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "You must enter a display name and the personal token from the admin."
+        Write-Host "The installer will not continue without these."
+        Write-Host ""
+
+        if ($needsRelay) {
+            $relayUrl = Read-RequiredValue `
+                -Prompt "Relay WSS URL" `
+                -CurrentValue "wss://ferginand-render.onrender.com/ws" `
+                -InvalidValues @("wss://your-render-service.onrender.com/ws")
+        }
+
+        if ($needsName) {
+            $defaultName = $env:USERNAME
+            if ([string]::IsNullOrWhiteSpace($defaultName)) {
+                $defaultName = "Friend"
+            }
+
+            $name = Read-RequiredValue `
+                -Prompt "Your display name" `
+                -CurrentValue $defaultName `
+                -InvalidValues @("YOUR_NAME_HERE")
+
+            $clientName = $name
+            $requestedBy = $name
+        }
+
+        if ($needsToken) {
+            Write-Host ""
+            Write-Host "Ask the admin for your personal FRONTEND_USER_TOKEN." -ForegroundColor Yellow
+            Write-Host "Do not use another person's token."
+            Write-Host ""
+
+            $token = Read-RequiredValue `
+                -Prompt "Paste your personal token" `
+                -CurrentValue "" `
+                -InvalidValues @("ASK_ADMIN_FOR_TOKEN", "ask_admin_for_your_personal_token")
+        }
+
+        $envText = Set-EnvValue -EnvText $envText -Key "FRONTEND_RELAY_URL" -Value $relayUrl
+        $envText = Set-EnvValue -EnvText $envText -Key "FRONTEND_USER_TOKEN" -Value $token
+        $envText = Set-EnvValue -EnvText $envText -Key "FRONTEND_ROLE" -Value "user"
+        $envText = Set-EnvValue -EnvText $envText -Key "FRONTEND_CLIENT_NAME" -Value $clientName
+        $envText = Set-EnvValue -EnvText $envText -Key "FRONTEND_REQUESTED_BY" -Value $requestedBy
+        $envText = Set-EnvValue -EnvText $envText -Key "FRONTEND_SERVER_ID" -Value "main"
+        $envText = Set-EnvValue -EnvText $envText -Key "FRONTEND_AUTO_CONNECT" -Value "true"
+        $envText = Set-EnvValue -EnvText $envText -Key "FRONTEND_HOST" -Value "127.0.0.1"
+        $envText = Set-EnvValue -EnvText $envText -Key "FRONTEND_PORT" -Value "5050"
+        $envText = Set-EnvValue -EnvText $envText -Key "FRONTEND_DEBUG" -Value "false"
+
+        Set-Content -Path $envPath -Value $envText -Encoding UTF8
+
+        Write-Ok ".env configured"
     } else {
         Write-Ok ".env exists and looks configured"
+    }
+
+    # Final hard validation. Do not allow install to continue with placeholders.
+    $envText = Get-Content $envPath -Raw
+    $finalToken = Read-EnvValue -EnvText $envText -Key "FRONTEND_USER_TOKEN"
+    $finalClientName = Read-EnvValue -EnvText $envText -Key "FRONTEND_CLIENT_NAME"
+    $finalRequestedBy = Read-EnvValue -EnvText $envText -Key "FRONTEND_REQUESTED_BY"
+
+    if (
+        [string]::IsNullOrWhiteSpace($finalToken) -or
+        $finalToken -eq "ASK_ADMIN_FOR_TOKEN" -or
+        $finalToken -eq "ask_admin_for_your_personal_token" -or
+        [string]::IsNullOrWhiteSpace($finalClientName) -or
+        $finalClientName -eq "YOUR_NAME_HERE" -or
+        [string]::IsNullOrWhiteSpace($finalRequestedBy) -or
+        $finalRequestedBy -eq "YOUR_NAME_HERE"
+    ) {
+        throw ".env is incomplete. Display name and personal token are required."
     }
 }
 
