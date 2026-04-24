@@ -1,0 +1,123 @@
+# ============================================================
+# Ferdinand Frontend - .gitignore
+# Keep secrets, local config, venvs, caches, logs, and OS junk
+# out of Git. Commit only source code and safe examples.
+# ============================================================
+
+
+# ------------------------------------------------------------
+# Secrets / local environment config
+# ------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+tokens_private.txt
+*_token*.txt
+*_tokens*.txt
+secrets.txt
+private/
+
+
+# ------------------------------------------------------------
+# Python virtual environments
+# ------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+
+
+# ------------------------------------------------------------
+# Python cache / build files
+# ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+build/
+dist/
+*.egg-info/
+.eggs/
+
+
+# ------------------------------------------------------------
+# Flask / runtime files
+# ------------------------------------------------------------
+instance/
+.webassets-cache
+
+*.log
+logs/
+tmp/
+temp/
+
+
+# ------------------------------------------------------------
+# Local SQLite / generated app data
+# ------------------------------------------------------------
+*.sqlite
+*.sqlite3
+*.db
+data/
+backups/
+
+
+# ------------------------------------------------------------
+# Node / frontend tooling, if added later
+# ------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+.vite/
+.next/
+out/
+coverage/
+
+
+# ------------------------------------------------------------
+# VS Code / editor local state
+# ------------------------------------------------------------
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.example.json
+
+.idea/
+*.swp
+*.swo
+
+
+# ------------------------------------------------------------
+# Windows / macOS / Linux OS junk
+# ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+
+# ------------------------------------------------------------
+# Local startup/task helper files, if customized per client
+# ------------------------------------------------------------
+start_ferginand_frontend.bat
+install_startup_task.bat
+uninstall_startup_task.bat
+*.lnk
+
+
+# ------------------------------------------------------------
+# Archives / exports
+# ------------------------------------------------------------
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz

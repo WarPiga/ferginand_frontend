@@ -1,0 +1,74 @@
+<!-- filename: templates/index.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ferginánd Web Control</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>Ferginánd</h1>
+      <span id="relayBadge" class="badge no">Relay offline</span>
+      <span id="hostBadge" class="badge no">Host offline</span>
+      <span id="roleBadge" class="badge neutral">user</span>
+    </div>
+    <div id="connState" class="meta">Disconnected</div>
+  </header>
+
+  <main class="dashboard">
+    <section class="panel col" id="queuePanel">
+      <div class="panel-title">
+        <strong>Queue</strong>
+        <span class="meta">Drop history/most-played item here</span>
+      </div>
+      <div class="queue-add">
+        <input id="q" class="player-input" type="text" placeholder="Paste YouTube / SoundCloud URL…" />
+        <button id="btnAdd" class="primary">Add</button>
+      </div>
+      <div id="queue" class="list"></div>
+    </section>
+
+    <section class="panel col" id="playerPanel">
+      <div class="panel-title">
+        <strong>Player</strong>
+        <span class="meta" id="stateLine">State: offline</span>
+      </div>
+      <div class="player-vertical">
+        <div id="nowThumbLarge" class="player-thumb placeholder">♪</div>
+        <div id="playhead" class="playhead"><div id="playheadFill" class="playhead-fill"></div></div>
+        <div id="playheadText" class="meta playhead-text"></div>
+        <div class="player-title" id="nowTitle">Nothing playing</div>
+        <div class="player-sub meta" id="nowSub"></div>
+        <div class="player-controls">
+          <button id="btnPlayPause" class="icon-btn" title="Play/Pause" aria-label="Play/Pause">▶</button>
+          <button id="btnSkip" class="icon-btn" title="Skip" aria-label="Skip">⏭</button>
+          <button id="btnStop" class="icon-btn danger" title="Stop/Clear" aria-label="Stop/Clear">⏹</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel col" id="historyPanel">
+      <div class="panel-title">
+        <strong>History</strong>
+        <button id="btnRefreshHistory" class="small">Refresh</button>
+      </div>
+      <div id="history" class="list"></div>
+    </section>
+
+    <section class="panel col" id="mostPlayedPanel">
+      <div class="panel-title">
+        <strong>Most played</strong>
+        <button id="btnRefreshMost" class="small">Refresh</button>
+      </div>
+      <div id="mostPlayed" class="list"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
