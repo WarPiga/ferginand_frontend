@@ -259,15 +259,33 @@
     setPlayheadUI(playhead.elapsed, playhead.duration);
   }
 
-  function renderThumb(container, track) {
-    const thumb = getThumb(track);
-    if (!container) return;
-    if (thumb) {
-      container.innerHTML = `<img src="${escapeHtml(thumb)}" alt="">`;
-    } else {
-      container.textContent = "♪";
-    }
+  function getPlaceholderThumbnail() {
+  return els.nowThumbLarge?.dataset?.placeholderThumbnail || "/static/ferg.png";
+}
+
+function setThumbBackground(container, url, isPlaceholder = false) {
+  if (!container) return;
+
+  container.innerHTML = "";
+  container.textContent = "";
+
+  container.style.backgroundImage = `url("${url}")`;
+  container.classList.toggle("placeholder", isPlaceholder);
+}
+
+function renderThumb(container, track) {
+  if (!container) return;
+
+  const placeholder = getPlaceholderThumbnail();
+  const thumb = getThumb(track);
+
+  if (!thumb) {
+    setThumbBackground(container, placeholder, true);
+    return;
   }
+
+  setThumbBackground(container, thumb, false);
+}
 
   function renderPlayer() {
     const now = state.playback.now;

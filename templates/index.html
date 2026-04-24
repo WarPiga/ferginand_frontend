@@ -4,7 +4,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Ferginánd Web Control</title>
+  <title>Ferginánd</title>
+  <link rel="icon" href="{{ url_for('static', filename='ferg.ico') }}" sizes="any">
+  <link rel="shortcut icon" href="{{ url_for('static', filename='ferg.ico') }}">
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -37,7 +39,11 @@
         <span class="meta" id="stateLine">State: offline</span>
       </div>
       <div class="player-vertical">
-        <div id="nowThumbLarge" class="player-thumb placeholder">♪</div>
+        <div
+          id="nowThumbLarge"
+          class="player-thumb"
+          data-placeholder-thumbnail="{{ url_for('static', filename='ferg.png') }}"
+        ></div>
         <div id="playhead" class="playhead"><div id="playheadFill" class="playhead-fill"></div></div>
         <div id="playheadText" class="meta playhead-text"></div>
         <div class="player-title" id="nowTitle">Nothing playing</div>
