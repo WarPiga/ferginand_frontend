@@ -311,7 +311,7 @@ FRONTEND_DEBUG=false
             Copy-Item $examplePath $envPath
             Write-Warn ".env was missing, so .env.example was copied to .env"
         } else {
-            $defaultEnv | Set-Content -Path $envPath -Encoding UTF8
+            Set-Content -Path $envPath -Value $defaultEnv -Encoding ASCII
             Write-Warn ".env was missing, so a default one was created"
         }
     }
@@ -338,6 +338,10 @@ FRONTEND_DEBUG=false
             $envText = Set-EnvValue -EnvText $envText -Key $key -Value $requiredDefaults[$key]
         }
     }
+
+    # Friend bootstrap is user-only by default. Do not prompt for role.
+    # Admin installs can still be edited manually later, but this installer keeps clients as users.
+    $envText = Set-EnvValue -EnvText $envText -Key "FRONTEND_ROLE" -Value "user"
 
     $relayUrl = Read-EnvValue -EnvText $envText -Key "FRONTEND_RELAY_URL"
     $token = Read-EnvValue -EnvText $envText -Key "FRONTEND_USER_TOKEN"
@@ -417,10 +421,11 @@ FRONTEND_DEBUG=false
         $envText = Set-EnvValue -EnvText $envText -Key "FRONTEND_PORT" -Value "5050"
         $envText = Set-EnvValue -EnvText $envText -Key "FRONTEND_DEBUG" -Value "false"
 
-        Set-Content -Path $envPath -Value $envText -Encoding UTF8
+        Set-Content -Path $envPath -Value $envText -Encoding ASCII
 
         Write-Ok ".env configured"
     } else {
+        Set-Content -Path $envPath -Value $envText -Encoding ASCII
         Write-Ok ".env exists and looks configured"
     }
 
