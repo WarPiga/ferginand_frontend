@@ -121,3 +121,10 @@ uninstall_startup_task.bat
 *.rar
 *.tar
 *.tar.gz
+
+.env
+.env.*
+!.env.example
+
+.venv/
+start_ferginand_frontend.bat
