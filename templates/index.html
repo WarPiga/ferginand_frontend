@@ -17,7 +17,12 @@
       <span id="hostBadge" class="badge no">Host offline</span>
       <span id="roleBadge" class="badge neutral">user</span>
     </div>
-    <div id="connState" class="meta">Disconnected</div>
+    <div class="top-actions">
+      <button id="btnUpdateFrontend" class="small local-action update" title="No frontend update available" disabled>✓ UI up to date</button>
+      <button id="btnRestartFrontend" class="small local-action" title="Restart the local frontend server">↻ Restart UI</button>
+      <button id="btnShutdownFrontend" class="small local-action danger" title="Shutdown the local frontend server">⏻ Shutdown UI</button>
+      <div id="connState" class="meta">Disconnected</div>
+    </div>
   </header>
 
   <main class="dashboard">

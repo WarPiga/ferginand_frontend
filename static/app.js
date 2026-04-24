@@ -19,6 +19,9 @@
     btnStop: $("btnStop"),
     btnRefreshHistory: $("btnRefreshHistory"),
     btnRefreshMost: $("btnRefreshMost"),
+    btnUpdateFrontend: $("btnUpdateFrontend"),
+    btnRestartFrontend: $("btnRestartFrontend"),
+    btnShutdownFrontend: $("btnShutdownFrontend"),
     queuePanel: $("queuePanel"),
     queue: $("queue"),
     history: $("history"),
@@ -58,6 +61,15 @@
       queue: [],
       history: [],
       mostPlayed: [],
+    },
+    frontend: {
+      checkingUpdate: false,
+      updateAvailable: false,
+      updateError: "",
+      ahead: 0,
+      behind: 0,
+      localSha: "",
+      remoteSha: "",
     },
   };
 
@@ -627,6 +639,166 @@ function renderThumb(container, track) {
     });
   }
 
+  async function getLocalJson(url) {
+    const response = await fetch(url, { cache: "no-store" });
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `Request failed: ${response.status}`);
+    }
+
+    return data;
+  }
+
+  async function postLocalAction(url, confirmMessage) {
+    if (confirmMessage && !window.confirm(confirmMessage)) {
+      return null;
+    }
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    let data = {};
+    try {
+      data = await response.json();
+    } catch (_) {}
+
+    if (!response.ok || data.ok === false) {
+      const error = data.error || `Request failed: ${response.status}`;
+      throw new Error(error);
+    }
+
+    return data;
+  }
+
+  function renderUpdateButton() {
+    const btn = els.btnUpdateFrontend;
+    if (!btn) return;
+
+    btn.classList.toggle("update-ready", !!state.frontend.updateAvailable);
+
+    if (state.frontend.checkingUpdate) {
+      btn.disabled = true;
+      btn.textContent = "⟳ Checking…";
+      btn.title = "Checking GitHub for frontend updates";
+      return;
+    }
+
+    if (state.frontend.updateAvailable) {
+      btn.disabled = false;
+      const count = state.frontend.behind || 1;
+      btn.textContent = `⬇ Update UI (${count})`;
+      btn.title = state.frontend.remoteSha
+        ? `Update available: ${state.frontend.localSha} → ${state.frontend.remoteSha}`
+        : "Frontend update available";
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = "✓ UI up to date";
+    btn.title = state.frontend.updateError || "No frontend update available";
+  }
+
+  async function checkFrontendUpdate(showToast = false) {
+    try {
+      state.frontend.checkingUpdate = true;
+      state.frontend.updateError = "";
+      renderUpdateButton();
+
+      const data = await getLocalJson("/api/frontend/update-status");
+
+      state.frontend.updateAvailable = !!data.updateAvailable;
+      state.frontend.ahead = Number(data.ahead || 0) || 0;
+      state.frontend.behind = Number(data.behind || 0) || 0;
+      state.frontend.localSha = data.localSha || "";
+      state.frontend.remoteSha = data.remoteSha || "";
+
+      if (showToast) {
+        toast(state.frontend.updateAvailable ? "Frontend update available." : "Frontend is already up to date.");
+      }
+    } catch (err) {
+      state.frontend.updateAvailable = false;
+      state.frontend.updateError = err.message || "Could not check frontend update status.";
+      if (showToast) toast(state.frontend.updateError, false);
+    } finally {
+      state.frontend.checkingUpdate = false;
+      renderUpdateButton();
+    }
+  }
+
+  async function updateFrontend() {
+    if (!state.frontend.updateAvailable) {
+      toast("No frontend update available.");
+      return;
+    }
+
+    try {
+      if (els.btnUpdateFrontend) els.btnUpdateFrontend.disabled = true;
+
+      const data = await postLocalAction(
+        "/api/frontend/update-and-restart",
+        "Update frontend from Git and restart the local UI server?"
+      );
+
+      if (!data) return;
+
+      toast(data.message || "Frontend update started. Reloading soon…");
+
+      setTimeout(() => {
+        window.location.reload();
+      }, 5500);
+    } catch (err) {
+      toast(err.message || "Frontend update failed.", false);
+      await checkFrontendUpdate(false);
+    }
+  }
+
+  async function restartFrontend() {
+    try {
+      await postLocalAction(
+        "/api/frontend/restart",
+        "Restart the local Ferdinand frontend server?"
+      );
+
+      toast("Frontend server restarting…");
+
+      setTimeout(() => {
+        window.location.reload();
+      }, 3000);
+    } catch (err) {
+      toast(err.message || "Restart failed.", false);
+    }
+  }
+
+  async function shutdownFrontend() {
+    try {
+      const data = await postLocalAction(
+        "/api/frontend/shutdown",
+        "Shutdown the local Ferdinand frontend server on this PC?"
+      );
+
+      if (!data) return;
+
+      toast("Frontend server shutting down…");
+
+      setTimeout(() => {
+        document.body.innerHTML = `
+          <div style="padding:32px;font-family:system-ui;color:#e5e7eb;background:#0b1220;min-height:100vh">
+            <h1>Ferginánd frontend stopped</h1>
+            <p>The local frontend server has been shut down.</p>
+            <p>You can start it again from Windows Startup on next login, or run <code>start_ferginand_frontend.bat</code>.</p>
+          </div>
+        `;
+      }, 800);
+    } catch (err) {
+      toast(err.message || "Shutdown failed.", false);
+    }
+  }
+
   function wireStaticActions() {
     if (els.btnDisconnect) els.btnDisconnect.onclick = () => disconnect(true);
     els.btnAdd.onclick = () => enqueueUrl(els.q.value);
@@ -642,6 +814,18 @@ function renderThumb(container, track) {
     els.btnStop.onclick = () => sendCommand("cmd.stop");
     els.btnRefreshHistory.onclick = () => sendCommand("cmd.get_history", { limit: 100 }, { toastAck: false });
     els.btnRefreshMost.onclick = () => sendCommand("cmd.get_most_played", { limit: 100 }, { toastAck: false });
+
+    if (els.btnUpdateFrontend) {
+      els.btnUpdateFrontend.onclick = () => updateFrontend();
+    }
+
+    if (els.btnRestartFrontend) {
+      els.btnRestartFrontend.onclick = () => restartFrontend();
+    }
+
+    if (els.btnShutdownFrontend) {
+      els.btnShutdownFrontend.onclick = () => shutdownFrontend();
+    }
   }
 
   async function loadServerConfig() {
@@ -670,6 +854,8 @@ function renderThumb(container, track) {
 
     state.profile = cfg;
     renderAll();
+    checkFrontendUpdate(false);
+    setInterval(() => checkFrontendUpdate(false), 5 * 60 * 1000);
 
     if (cfg.autoConnect !== false && cfg.relayUrl && cfg.token) connect();
   }
