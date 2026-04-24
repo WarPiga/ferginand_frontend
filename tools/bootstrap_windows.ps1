@@ -6,7 +6,7 @@
 $ErrorActionPreference = "Stop"
 
 # ============================================================
-# EDIT THESE BEFORE COMMITTING
+# Project settings
 # ============================================================
 
 $RepoUrl = "https://github.com/WarPiga/ferginand_frontend.git"
@@ -84,28 +84,67 @@ function Ensure-Git {
     Write-Ok "Git installed"
 }
 
-function Get-PythonCommand {
-    $candidates = @(
-        @{ Cmd = "py"; Args = @("-3.13") },
-        @{ Cmd = "python"; Args = @() },
-        @{ Cmd = "python3"; Args = @() }
+function Test-Python313 {
+    param(
+        [string]$Exe,
+        [string[]]$Args = @()
     )
 
-    foreach ($candidate in $candidates) {
-        if (-not (Command-Exists $candidate.Cmd)) {
-            continue
+    try {
+        $versionOutput = & $Exe @($Args + @("--version")) 2>&1
+        if ($LASTEXITCODE -ne 0 -or ($versionOutput -notmatch "Python 3\.13")) {
+            return $null
         }
 
-        try {
-            $output = & $candidate.Cmd @($candidate.Args + @("--version")) 2>&1
-            if ($LASTEXITCODE -eq 0 -and ($output -match "Python 3\.13")) {
-                return @{
-                    Cmd = $candidate.Cmd
-                    Args = $candidate.Args
-                }
-            }
-        } catch {
-            continue
+        $realExe = & $Exe @($Args + @("-c", "import sys; print(sys.executable)")) 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            return $null
+        }
+
+        $realExe = (($realExe | Select-Object -First 1) -as [string]).Trim()
+
+        return @{
+            Exe = $Exe
+            Args = $Args
+            RealExe = $realExe
+            Version = (($versionOutput | Select-Object -First 1) -as [string]).Trim()
+        }
+    } catch {
+        return $null
+    }
+}
+
+function Get-PythonCommand {
+    $candidates = @()
+
+    if (Command-Exists "py") {
+        $candidates += @{ Exe = "py"; Args = @("-3.13") }
+    }
+
+    if (Command-Exists "python") {
+        $candidates += @{ Exe = "python"; Args = @() }
+    }
+
+    if (Command-Exists "python3") {
+        $candidates += @{ Exe = "python3"; Args = @() }
+    }
+
+    $knownPaths = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"),
+        (Join-Path $env:ProgramFiles "Python313\python.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Python313\python.exe")
+    )
+
+    foreach ($path in $knownPaths) {
+        if ($path -and (Test-Path $path)) {
+            $candidates += @{ Exe = $path; Args = @() }
+        }
+    }
+
+    foreach ($candidate in $candidates) {
+        $result = Test-Python313 -Exe $candidate.Exe -Args $candidate.Args
+        if ($result) {
+            return $result
         }
     }
 
@@ -117,7 +156,8 @@ function Ensure-Python {
 
     $pythonCmd = Get-PythonCommand
     if ($pythonCmd) {
-        Write-Ok "Python 3.13 found: $($pythonCmd.Cmd) $($pythonCmd.Args -join ' ')"
+        Write-Ok "Python 3.13 found: $($pythonCmd.Version)"
+        Write-Host "Python executable: $($pythonCmd.RealExe)"
         return $pythonCmd
     }
 
@@ -133,8 +173,18 @@ function Ensure-Python {
         throw "Python installed but PATH not refreshed"
     }
 
-    Write-Ok "Python 3.13 installed: $($pythonCmd.Cmd) $($pythonCmd.Args -join ' ')"
+    Write-Ok "Python 3.13 installed: $($pythonCmd.Version)"
+    Write-Host "Python executable: $($pythonCmd.RealExe)"
     return $pythonCmd
+}
+
+function Invoke-Python313 {
+    param(
+        [object]$PythonCmd,
+        [string[]]$Arguments
+    )
+
+    & $PythonCmd.Exe @($PythonCmd.Args + $Arguments)
 }
 
 function Clone-Or-Pull-Repo {
@@ -232,31 +282,54 @@ function Ensure-Venv-And-Requirements {
     Write-Step "Creating/updating Python virtual environment"
 
     Push-Location $ProjectDir
+    try {
+        $venvDir = Join-Path $ProjectDir ".venv"
+        $venvPython = Join-Path $venvDir "Scripts\python.exe"
 
-    if (-not (Test-Path ".venv")) {
-        & $PythonCmd.Cmd @($PythonCmd.Args + @("-m", "venv", ".venv"))
-        Write-Ok "Created .venv"
-    } else {
-        Write-Ok ".venv already exists"
-    }
+        if ((Test-Path $venvDir) -and (-not (Test-Path $venvPython))) {
+            Write-Warn "Partial/broken .venv detected. Removing it and recreating."
+            Remove-Item -Recurse -Force $venvDir
+        }
 
-    $venvPython = Join-Path $ProjectDir ".venv\Scripts\python.exe"
+        if (-not (Test-Path $venvPython)) {
+            Write-Step "Creating .venv with Python 3.13"
+            Write-Host "Using: $($PythonCmd.RealExe)"
+            Invoke-Python313 -PythonCmd $PythonCmd -Arguments @("-m", "venv", ".venv")
 
-    if (-not (Test-Path $venvPython)) {
+            if ($LASTEXITCODE -ne 0) {
+                throw "Python venv creation command failed"
+            }
+
+            Write-Ok "Created .venv"
+        } else {
+            Write-Ok ".venv already exists"
+        }
+
+        if (-not (Test-Path $venvPython)) {
+            throw "Venv Python not found after creation: $venvPython"
+        }
+
+        Write-Step "Checking venv Python"
+        & $venvPython --version
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Venv Python does not run correctly: $venvPython"
+        }
+
+        Write-Step "Upgrading pip"
+        & $venvPython -m ensurepip --upgrade
+        & $venvPython -m pip install --upgrade pip
+
+        if (Test-Path "requirements.txt") {
+            Write-Step "Installing requirements.txt"
+            & $venvPython -m pip install -r requirements.txt
+            Write-Ok "requirements.txt installed"
+        } else {
+            Write-Warn "requirements.txt not found"
+        }
+    } finally {
         Pop-Location
-        throw "Venv Python not found: $venvPython"
     }
-
-    & $venvPython -m pip install --upgrade pip
-
-    if (Test-Path "requirements.txt") {
-        & $venvPython -m pip install -r requirements.txt
-        Write-Ok "requirements.txt installed"
-    } else {
-        Write-Warn "requirements.txt not found"
-    }
-
-    Pop-Location
 }
 
 function Ensure-StartBat {
@@ -274,11 +347,6 @@ cd /d "$ProjectDir"
 
 if not exist ".venv\Scripts\python.exe" (
     echo [ERROR] Missing .venv. Run bootstrap again. >> "$logPath"
-    exit /b 1
-)
-
-if not exist ".venv\Scripts\pythonw.exe" (
-    echo [ERROR] Missing pythonw.exe. Run bootstrap again. >> "$logPath"
     exit /b 1
 )
 
@@ -327,7 +395,7 @@ shell.Run Chr(34) & "$batPath" & Chr(34), 0, False
 }
 
 function Install-StartupShortcut {
-    param([string]$TargetBat)
+    param([string]$TargetLauncher)
 
     Write-Step "Installing Windows Startup shortcut"
 
@@ -336,7 +404,7 @@ function Install-StartupShortcut {
 
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($shortcutPath)
-    $shortcut.TargetPath = $TargetBat
+    $shortcut.TargetPath = $TargetLauncher
     $shortcut.WorkingDirectory = $ProjectDir
     $shortcut.WindowStyle = 7
     $shortcut.Description = "Starts the Ferdinand Frontend local server in the background"
@@ -347,11 +415,11 @@ function Install-StartupShortcut {
 }
 
 function Start-Frontend {
-    param([string]$TargetBat)
+    param([string]$TargetLauncher)
 
     Write-Step "Starting frontend server"
 
-    Start-Process -FilePath $TargetBat -WorkingDirectory $ProjectDir
+    Start-Process -FilePath $TargetLauncher -WorkingDirectory $ProjectDir
 
     Start-Sleep -Seconds 3
 
@@ -379,9 +447,9 @@ try {
     Clone-Or-Pull-Repo
     Ensure-EnvFile
     Ensure-Venv-And-Requirements -PythonCmd $pythonCmd
-    $startBat = Ensure-StartBat
-    Install-StartupShortcut -TargetBat $startBat
-    Start-Frontend -TargetBat $startBat
+    $launcher = Ensure-StartBat
+    Install-StartupShortcut -TargetLauncher $launcher
+    Start-Frontend -TargetLauncher $launcher
 
     Write-Host ""
     Write-Host "============================================================" -ForegroundColor Green
