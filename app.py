@@ -113,17 +113,11 @@ def _run_command(args: list[str], timeout: int = 90) -> tuple[int, str]:
 
 def _restart_process_after_delay(delay_seconds: float = 0.8) -> None:
     """
-    Restart the local frontend safely on Windows.
+    Restart the local frontend safely.
 
-    Do not use os.execv() here. On Windows + Flask dev server it can create
-    a process that prints the Flask banner but does not reliably serve requests.
-
-    Instead:
-    - return the HTTP response
-    - start a detached helper process
-    - helper waits until this process exits / port is free
-    - helper starts app.py again
-    - this process exits
+    This writes and launches a small helper script. The helper waits until
+    port 5050 is free, then starts app.py again. Logs go to
+    frontend_restart.log so restart failures are visible.
     """
     def worker() -> None:
         time.sleep(delay_seconds)
@@ -131,65 +125,87 @@ def _restart_process_after_delay(delay_seconds: float = 0.8) -> None:
         host = os.getenv("FRONTEND_HOST", "127.0.0.1")
         port = int(os.getenv("FRONTEND_PORT", "5050"))
 
-        helper_code = f"""
-import os
-import socket
-import subprocess
-import sys
-import time
-from pathlib import Path
+        helper_path = PROJECT_ROOT / "_restart_frontend_helper.py"
+        log_path = PROJECT_ROOT / "frontend_restart.log"
 
-project_root = Path(r"{str(PROJECT_ROOT)}")
-python_exe = Path(r"{str(PYTHON_EXE)}")
-app_file = project_root / "app.py"
-host = {host!r}
-port = {port!r}
+        helper_code = "\n".join([
+            "from __future__ import annotations",
+            "import os",
+            "import socket",
+            "import subprocess",
+            "import sys",
+            "import time",
+            "from pathlib import Path",
+            "",
+            f"project_root = Path(r'''{str(PROJECT_ROOT)}''')",
+            f"python_exe = Path(r'''{str(PYTHON_EXE)}''')",
+            "app_file = project_root / 'app.py'",
+            f"host = {host!r}",
+            f"port = {port!r}",
+            f"log_path = Path(r'''{str(log_path)}''')",
+            "",
+            "def log(message: str) -> None:",
+            "    with log_path.open('a', encoding='utf-8') as f:",
+            "        f.write(f'[{time.strftime(\"%Y-%m-%d %H:%M:%S\")}] {message}\\n')",
+            "",
+            "def port_is_free(host: str, port: int) -> bool:",
+            "    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)",
+            "    try:",
+            "        s.settimeout(0.25)",
+            "        return s.connect_ex((host, port)) != 0",
+            "    finally:",
+            "        s.close()",
+            "",
+            "try:",
+            "    log('Restart helper started')",
+            "    deadline = time.time() + 20",
+            "    while time.time() < deadline:",
+            "        if port_is_free(host, port):",
+            "            log(f'Port {host}:{port} is free')",
+            "            break",
+            "        time.sleep(0.25)",
+            "",
+            "    creationflags = 0",
+            "    if os.name == 'nt':",
+            "        creationflags = subprocess.CREATE_NO_WINDOW",
+            "",
+            "    subprocess.Popen(",
+            "        [str(python_exe), str(app_file)],",
+            "        cwd=str(project_root),",
+            "        stdout=subprocess.DEVNULL,",
+            "        stderr=subprocess.DEVNULL,",
+            "        stdin=subprocess.DEVNULL,",
+            "        creationflags=creationflags,",
+            "        close_fds=True,",
+            "    )",
+            "    log('New frontend process started')",
+            "except Exception as exc:",
+            "    log(f'ERROR: {exc!r}')",
+            "    raise",
+            "",
+        ])
 
-def port_is_free(host, port):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.settimeout(0.25)
-        return s.connect_ex((host, port)) != 0
-    finally:
-        s.close()
-
-deadline = time.time() + 15
-
-while time.time() < deadline:
-    if port_is_free(host, port):
-        break
-    time.sleep(0.25)
-
-creationflags = 0
-if os.name == "nt":
-    creationflags = subprocess.CREATE_NO_WINDOW
-
-subprocess.Popen(
-    [str(python_exe), str(app_file)],
-    cwd=str(project_root),
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL,
-    stdin=subprocess.DEVNULL,
-    creationflags=creationflags,
-    close_fds=True,
-)
-"""
+        helper_path.write_text(helper_code, encoding="utf-8")
 
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
 
-        subprocess.Popen(
-            [str(PYTHON_EXE), "-c", helper_code],
-            cwd=str(PROJECT_ROOT),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            creationflags=creationflags,
-            close_fds=True,
-        )
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Launching restart helper\n")
+            log_file.flush()
 
-        time.sleep(0.3)
+            subprocess.Popen(
+                [str(PYTHON_EXE), str(helper_path)],
+                cwd=str(PROJECT_ROOT),
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                creationflags=creationflags,
+                close_fds=True,
+            )
+
+        time.sleep(0.5)
         os._exit(0)
 
     threading.Thread(target=worker, daemon=True).start()
@@ -310,13 +326,25 @@ def api_frontend_update_and_restart():
 
     logs: list[str] = []
 
-    code, output = _run_command(["git", "pull", "--ff-only"], timeout=120)
-    logs.append(output)
+    # Client machines should follow GitHub exactly.
+    # This intentionally overwrites local source changes, but keeps .env because .env is gitignored.
+    code, output = _run_command(["git", "fetch", "--quiet"], timeout=120)
+    logs.append("$ git fetch --quiet\n" + output)
 
     if code != 0:
         return jsonify({
             "ok": False,
-            "error": "git pull failed",
+            "error": "git fetch failed",
+            "log": "\n".join(logs)[-4000:],
+        }), 500
+
+    code, output = _run_command(["git", "reset", "--hard", "@{u}"], timeout=120)
+    logs.append("$ git reset --hard @{u}\n" + output)
+
+    if code != 0:
+        return jsonify({
+            "ok": False,
+            "error": "git reset failed",
             "log": "\n".join(logs)[-4000:],
         }), 500
 
@@ -325,7 +353,7 @@ def api_frontend_update_and_restart():
             [str(PYTHON_EXE), "-m", "pip", "install", "-r", str(REQUIREMENTS_FILE)],
             timeout=180,
         )
-        logs.append(output)
+        logs.append("$ pip install -r requirements.txt\n" + output)
 
         if code != 0:
             return jsonify({
@@ -339,6 +367,7 @@ def api_frontend_update_and_restart():
     return jsonify({
         "ok": True,
         "message": "Frontend updated. Restarting local server…",
+        "updated": True,
         "log": "\n".join(logs)[-4000:],
     })
 
