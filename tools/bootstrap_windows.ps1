@@ -260,58 +260,70 @@ function Ensure-Venv-And-Requirements {
 }
 
 function Ensure-StartBat {
-    Write-Step "Creating frontend start BAT"
+    Write-Step "Creating frontend startup files"
 
     $batPath = Join-Path $ProjectDir "start_ferginand_frontend.bat"
+    $vbsPath = Join-Path $ProjectDir "start_ferginand_frontend_hidden.vbs"
+    $logPath = Join-Path $ProjectDir "frontend_startup.log"
 
-    $content = @"
+    $batContent = @"
 @echo off
 setlocal
 
 cd /d "$ProjectDir"
 
 if not exist ".venv\Scripts\python.exe" (
-    echo [ERROR] Missing .venv. Run bootstrap again.
-    pause
+    echo [ERROR] Missing .venv. Run bootstrap again. >> "$logPath"
+    exit /b 1
+)
+
+if not exist ".venv\Scripts\pythonw.exe" (
+    echo [ERROR] Missing pythonw.exe. Run bootstrap again. >> "$logPath"
     exit /b 1
 )
 
 if not exist ".env" (
-    echo [ERROR] Missing .env. Ask admin for config.
-    notepad ".env"
-    pause
+    echo [ERROR] Missing .env. Ask admin for config. >> "$logPath"
     exit /b 1
 )
 
-echo Updating Ferdinand Frontend...
+echo [%date% %time%] Updating Ferdinand Frontend... >> "$logPath"
 
 where git >nul 2>nul
 if errorlevel 1 (
-    echo [WARNING] Git not found on PATH. Skipping auto-update.
+    echo [WARNING] Git not found on PATH. Skipping auto-update. >> "$logPath"
 ) else (
-    git pull
+    git pull >> "$logPath" 2>&1
     if errorlevel 1 (
-        echo [WARNING] git pull failed. Continuing with currently installed version.
+        echo [WARNING] git pull failed. Continuing with currently installed version. >> "$logPath"
     )
 )
 
-echo Updating Python requirements...
-".venv\Scripts\python.exe" -m pip install -r requirements.txt
+echo [%date% %time%] Updating Python requirements... >> "$logPath"
+".venv\Scripts\python.exe" -m pip install -r requirements.txt >> "$logPath" 2>&1
 if errorlevel 1 (
-    echo [WARNING] requirements install failed. Continuing anyway.
+    echo [WARNING] requirements install failed. Continuing anyway. >> "$logPath"
 )
 
-echo Starting Ferdinand Frontend...
-echo URL: $AppUrl
-echo.
+echo [%date% %time%] Starting Ferdinand Frontend hidden... >> "$logPath"
 
-".venv\Scripts\python.exe" app.py
+start "" /b ".venv\Scripts\python.exe" app.py >> "$logPath" 2>&1
+
+exit /b 0
 "@
 
-    Set-Content -Path $batPath -Value $content -Encoding ASCII
-    Write-Ok "Start file created: $batPath"
+    $vbsContent = @"
+Set shell = CreateObject("WScript.Shell")
+shell.Run Chr(34) & "$batPath" & Chr(34), 0, False
+"@
 
-    return $batPath
+    Set-Content -Path $batPath -Value $batContent -Encoding ASCII
+    Set-Content -Path $vbsPath -Value $vbsContent -Encoding ASCII
+
+    Write-Ok "Start BAT created: $batPath"
+    Write-Ok "Hidden launcher created: $vbsPath"
+
+    return $vbsPath
 }
 
 function Install-StartupShortcut {
@@ -327,7 +339,7 @@ function Install-StartupShortcut {
     $shortcut.TargetPath = $TargetBat
     $shortcut.WorkingDirectory = $ProjectDir
     $shortcut.WindowStyle = 7
-    $shortcut.Description = "Starts the Ferdinand Frontend local server"
+    $shortcut.Description = "Starts the Ferdinand Frontend local server in the background"
     $shortcut.Save()
 
     Write-Ok "Startup shortcut installed:"
