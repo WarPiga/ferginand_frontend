@@ -119,7 +119,42 @@
   }
 
   function getRequestedBy(t) {
-    return String(t?.requestedBy || t?.requested_by || t?.who || "");
+    return String(t?.requestedBy || t?.requested_by || t?.who || "web");
+  }
+
+  function getTrackSourceLabel(t) {
+    const raw = String(
+      t?.source ||
+      t?.provider ||
+      t?.platform ||
+      t?.extractor ||
+      t?.sourceType ||
+      t?.source_type ||
+      ""
+    ).toLowerCase();
+
+    const url = getTrackUrl(t).toLowerCase();
+
+    if (
+      raw.includes("youtube") ||
+      raw === "yt" ||
+      url.includes("youtube.com") ||
+      url.includes("youtu.be") ||
+      url.startsWith("y:")
+    ) {
+      return "YT";
+    }
+
+    if (
+      raw.includes("soundcloud") ||
+      raw === "sc" ||
+      url.includes("soundcloud.com") ||
+      url.startsWith("s:")
+    ) {
+      return "SC";
+    }
+
+    return "";
   }
 
   function getDuration(t) {
@@ -366,17 +401,24 @@
 
   function itemMeta(track, mode) {
     const bits = [];
-    const source = getSourceLabel(track);
+
+    const source = getTrackSourceLabel(track);
     if (source) bits.push(source);
+
     if (track.uploader) bits.push(String(track.uploader));
     if (getDuration(track)) bits.push(fmtDur(getDuration(track)));
 
+    // History intentionally does not show:
+    // - who added it
+    // - played datetime
+    // - completion / skipped / stopped status
     if (mode === "history") {
-      const when = fmtDate(track.ended_at || track.endedAt || track.started_at || track.startedAt || track.playedAt || track.last_played_at);
-      if (when) bits.push(when);
-      if (track.finish_reason || track.finishReason) bits.push(String(track.finish_reason || track.finishReason));
+      return bits.filter(Boolean).join(" • ");
     }
 
+    // Most played intentionally does not show:
+    // - who added it
+    // - last played datetime
     if (mode === "most") {
       bits.push(`${getPlayCount(track)} play(s)`);
     }
