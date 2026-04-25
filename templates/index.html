@@ -18,6 +18,30 @@
       <span id="hostBadge" class="badge no">Host offline</span>
       <span id="roleBadge" class="badge neutral">user</span>
     </div>
+
+    <div class="top-search" id="trackSearchBox">
+      <div class="search-input-wrap">
+        <span class="search-icon" aria-hidden="true">⌕</span>
+        <input
+          id="trackSearchInput"
+          class="track-search-input"
+          type="search"
+          placeholder="Search saved tracks or artists…"
+          autocomplete="off"
+          spellcheck="false"
+          disabled
+        />
+        <button id="trackSearchClear" class="search-clear" title="Clear search" aria-label="Clear search" hidden>×</button>
+      </div>
+      <div id="trackSearchPanel" class="search-panel" hidden>
+        <div class="search-panel-head">
+          <strong>Search results</strong>
+          <span id="trackSearchStatus" class="meta">Type at least 2 characters</span>
+        </div>
+        <div id="trackSearchResults" class="search-results"></div>
+      </div>
+    </div>
+
     <div class="top-actions">
       <button id="btnUpdateFrontend" class="small local-action update" title="No frontend update available" disabled>✓ UI up to date</button>
       <button id="btnRestartFrontend" class="small local-action" title="Restart the local frontend server">↻ Restart UI</button>

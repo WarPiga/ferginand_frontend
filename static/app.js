@@ -4,6 +4,11 @@
 
   const PROTOCOL_VERSION = 1;
   const MAX_RENDERED_ITEMS = 100;
+  const SEARCH_MIN_QUERY = 2;
+  const SEARCH_LIMIT = 24;
+  const SEARCH_DEBOUNCE_MS = 240;
+  const SEARCH_RATE_WINDOW_MS = 2000;
+  const SEARCH_RATE_MAX = 7;
   const $ = (id) => document.getElementById(id);
 
   const els = {
@@ -23,6 +28,12 @@
     btnUpdateFrontend: $("btnUpdateFrontend"),
     btnRestartFrontend: $("btnRestartFrontend"),
     btnShutdownFrontend: $("btnShutdownFrontend"),
+    trackSearchBox: $("trackSearchBox"),
+    trackSearchInput: $("trackSearchInput"),
+    trackSearchClear: $("trackSearchClear"),
+    trackSearchPanel: $("trackSearchPanel"),
+    trackSearchResults: $("trackSearchResults"),
+    trackSearchStatus: $("trackSearchStatus"),
     queuePanel: $("queuePanel"),
     queue: $("queue"),
     history: $("history"),
@@ -62,6 +73,16 @@
       queue: [],
       history: [],
       mostPlayed: [],
+    },
+    search: {
+      query: "",
+      items: [],
+      loading: false,
+      visible: false,
+      activeRequestId: "",
+      debounceTimer: null,
+      sentAt: [],
+      error: "",
     },
     frontend: {
       checkingUpdate: false,
@@ -250,7 +271,15 @@
   function setControlsEnabled() {
     const canUse = state.connected && !!state.relay.hostConnected;
     const isAdmin = state.profile.role === "admin";
-    [els.q, els.btnAdd, els.btnPlayPause, els.btnSkip, els.btnRefreshHistory, els.btnRefreshMost].forEach((el) => {
+    [
+      els.q,
+      els.btnAdd,
+      els.btnPlayPause,
+      els.btnSkip,
+      els.btnRefreshHistory,
+      els.btnRefreshMost,
+      els.trackSearchInput,
+    ].forEach((el) => {
       if (el) el.disabled = !canUse;
     });
     if (els.btnStop) els.btnStop.disabled = !canUse || !isAdmin;
@@ -358,15 +387,6 @@
 
     const placeholder = getPlaceholderThumbnail();
     const thumb = getThumb(track);
-
-    setThumbImage(container, thumb || placeholder, !thumb);
-  }
-
-  function renderThumb(container, track) {
-    if (!container) return;
-
-    const placeholder = getPlaceholderThumbnail();
-    const thumb = getThumb(track);
     setThumbImage(container, thumb || placeholder, !thumb);
   }
 
@@ -426,6 +446,212 @@
     return bits.filter(Boolean).join(" • ");
   }
 
+  function searchMeta(track) {
+    const bits = [];
+    const source = getTrackSourceLabel(track);
+    const uploader = track?.uploader || track?.artist || track?.channel || "";
+
+    if (source) bits.push(source);
+    if (uploader) bits.push(String(uploader));
+    if (getDuration(track)) bits.push(fmtDur(getDuration(track)));
+    if (getPlayCount(track)) bits.push(`${getPlayCount(track)} play(s)`);
+
+    return bits.filter(Boolean).join(" • ");
+  }
+
+  function renderSearchResult(track) {
+    const url = getTrackUrl(track);
+    const title = getTrackTitle(track);
+    const thumb = getThumb(track);
+    const draggable = !!url;
+    const dragAttrs = draggable
+      ? `draggable="true" data-url="${encodeURIComponent(url)}"`
+      : "";
+    const thumbHtml = thumb
+      ? `<img src="${escapeHtml(thumb)}" alt="">`
+      : `<div class="thumb-fallback">♪</div>`;
+    const linkHtml = url
+      ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>`
+      : escapeHtml(title);
+
+    return `
+      <div class="queue-item search-result" ${dragAttrs} tabindex="0" title="Drag this track into the Queue panel, or double-click it to queue instantly.">
+        ${thumbHtml}
+        <div class="item-main">
+          <div class="item-title">${linkHtml}</div>
+          <div class="meta">${escapeHtml(searchMeta(track))}</div>
+        </div>
+        ${draggable ? '<span class="drag-pill">Drag</span>' : ''}
+      </div>`;
+  }
+
+  function getSearchQuery() {
+    return String(els.trackSearchInput?.value || "").trim();
+  }
+
+  function renderSearchPanel() {
+    if (!els.trackSearchInput || !els.trackSearchPanel || !els.trackSearchResults) return;
+
+    const query = getSearchQuery();
+    const usable = state.connected && !!state.relay.hostConnected;
+    els.trackSearchInput.disabled = !usable;
+    if (els.trackSearchClear) els.trackSearchClear.hidden = !query;
+
+    if (!state.search.visible) {
+      els.trackSearchPanel.hidden = true;
+      return;
+    }
+
+    els.trackSearchPanel.hidden = false;
+
+    if (!usable) {
+      if (els.trackSearchStatus) els.trackSearchStatus.textContent = "Connect to host first";
+      els.trackSearchResults.innerHTML = '<div class="search-empty">Search becomes available after the host is online.</div>';
+      return;
+    }
+
+    if (query.length < SEARCH_MIN_QUERY) {
+      if (els.trackSearchStatus) els.trackSearchStatus.textContent = `Type at least ${SEARCH_MIN_QUERY} characters`;
+      els.trackSearchResults.innerHTML = '<div class="search-empty">Start typing a title or artist. Results can be dragged into Queue.</div>';
+      return;
+    }
+
+    if (state.search.error) {
+      if (els.trackSearchStatus) els.trackSearchStatus.textContent = "Search blocked";
+      els.trackSearchResults.innerHTML = `<div class="search-empty error">${escapeHtml(state.search.error)}</div>`;
+      return;
+    }
+
+    const items = Array.isArray(state.search.items) ? state.search.items : [];
+
+    if (state.search.loading && !items.length) {
+      if (els.trackSearchStatus) els.trackSearchStatus.textContent = "Searching…";
+      els.trackSearchResults.innerHTML = `
+        <div class="search-skeleton"></div>
+        <div class="search-skeleton short"></div>
+        <div class="search-skeleton"></div>`;
+      return;
+    }
+
+    if (els.trackSearchStatus) {
+      const suffix = state.search.loading ? " • updating…" : "";
+      els.trackSearchStatus.textContent = `${items.length} result${items.length === 1 ? "" : "s"}${suffix}`;
+    }
+
+    els.trackSearchResults.innerHTML = items.length
+      ? items.map(renderSearchResult).join("")
+      : '<div class="search-empty">No saved tracks matched that search.</div>';
+    wireDynamicActions();
+  }
+
+  function resetSearchResults(message = "") {
+    state.search.items = [];
+    state.search.loading = false;
+    state.search.error = message;
+    state.search.activeRequestId = "";
+    renderSearchPanel();
+  }
+
+  function canSendSearchNow() {
+    const now = Date.now();
+    state.search.sentAt = state.search.sentAt.filter((ts) => now - ts < SEARCH_RATE_WINDOW_MS);
+    if (state.search.sentAt.length >= SEARCH_RATE_MAX) return false;
+    state.search.sentAt.push(now);
+    return true;
+  }
+
+  async function runTrackSearch() {
+    const query = getSearchQuery();
+    if (query.length < SEARCH_MIN_QUERY) {
+      resetSearchResults("");
+      return;
+    }
+
+    if (!state.connected || !state.relay.hostConnected) {
+      resetSearchResults("Connect to the host before searching.");
+      return;
+    }
+
+    if (!canSendSearchNow()) {
+      resetSearchResults("Slow down a bit. Search is rate-limited to protect the host.");
+      return;
+    }
+
+    const requestId = newRequestId();
+    state.search.query = query;
+    state.search.loading = true;
+    state.search.visible = true;
+    state.search.activeRequestId = requestId;
+    state.search.error = "";
+    renderSearchPanel();
+
+    try {
+      await sendCommand(
+        "cmd.search_tracks",
+        {
+          query,
+          limit: SEARCH_LIMIT,
+          clientId: state.profile.clientName || state.profile.requestedBy || "web-client",
+        },
+        { requestId, toastAck: false, timeoutMs: 10000 }
+      );
+      if (state.search.activeRequestId === requestId) {
+        state.search.loading = false;
+        renderSearchPanel();
+      }
+    } catch (err) {
+      if (state.search.activeRequestId === requestId) {
+        state.search.loading = false;
+        state.search.error = err.message || "Search failed.";
+        renderSearchPanel();
+      }
+    }
+  }
+
+  function scheduleTrackSearch() {
+    if (!els.trackSearchInput) return;
+
+    const query = getSearchQuery();
+    state.search.visible = true;
+    state.search.query = query;
+    state.search.error = "";
+
+    if (state.search.debounceTimer) clearTimeout(state.search.debounceTimer);
+
+    if (query.length < SEARCH_MIN_QUERY) {
+      resetSearchResults("");
+      return;
+    }
+
+    state.search.loading = true;
+    renderSearchPanel();
+    state.search.debounceTimer = setTimeout(runTrackSearch, SEARCH_DEBOUNCE_MS);
+  }
+
+  function applySearchSnapshot(message) {
+    const requestId = message?.requestId || "";
+    const query = String(message?.query || message?.payload?.query || state.search.query || "");
+
+    if (state.search.activeRequestId && requestId && requestId !== state.search.activeRequestId) {
+      return;
+    }
+
+    if (query && query !== getSearchQuery()) {
+      return;
+    }
+
+    state.search.items = Array.isArray(message?.items)
+      ? message.items
+      : Array.isArray(message?.payload?.items)
+        ? message.payload.items
+        : [];
+    state.search.query = query;
+    state.search.loading = false;
+    state.search.visible = true;
+    state.search.error = "";
+    renderSearchPanel();
+  }
+
   function renderItem(track, mode) {
     const url = getTrackUrl(track);
     const title = getTrackTitle(track);
@@ -459,6 +685,7 @@
     renderList(els.queue, state.playback.queue, "queue", "Empty");
     renderList(els.history, state.playback.history, "history", "Empty");
     renderList(els.mostPlayed, state.playback.mostPlayed, "most", "Empty");
+    renderSearchPanel();
     wireDynamicActions();
   }
 
@@ -525,6 +752,11 @@
       return;
     }
 
+    if (type === "track_search.snapshot") {
+      applySearchSnapshot(message);
+      return;
+    }
+
     if (type === "ack") {
       const reqId = message.requestId;
       const pending = reqId ? state.pending.get(reqId) : null;
@@ -551,7 +783,7 @@
   }
 
   function sendCommand(type, payload = {}, options = {}) {
-    const requestId = newRequestId();
+    const requestId = options.requestId || newRequestId();
     const message = { type, requestId, payload };
     sendRaw(message);
 
@@ -652,6 +884,8 @@
       pending.reject(new Error("Disconnected"));
       state.pending.delete(reqId);
     }
+    state.search.loading = false;
+    state.search.activeRequestId = "";
     renderAll();
   }
 
@@ -687,11 +921,25 @@
 
   function wireDynamicActions() {
     document.querySelectorAll(".queue-item[draggable='true']").forEach((node) => {
+      const getNodeUrl = () => decodeURIComponent(node.getAttribute("data-url") || "");
+
       node.ondragstart = (event) => {
-        const url = decodeURIComponent(node.getAttribute("data-url") || "");
+        const url = getNodeUrl();
         event.dataTransfer.setData("text/plain", url);
         event.dataTransfer.setData("application/json", JSON.stringify({ url }));
         event.dataTransfer.effectAllowed = "copy";
+      };
+
+      node.ondblclick = async () => {
+        const url = getNodeUrl();
+        if (url) await enqueueUrl(url);
+      };
+
+      node.onkeydown = async (event) => {
+        if (event.key === "Enter") {
+          const url = getNodeUrl();
+          if (url) await enqueueUrl(url);
+        }
       };
     });
   }
@@ -882,6 +1130,44 @@
     els.btnAdd.onclick = () => enqueueUrl(els.q.value);
     els.q.addEventListener("keydown", (event) => {
       if (event.key === "Enter") enqueueUrl(els.q.value);
+    });
+
+    if (els.trackSearchInput) {
+      els.trackSearchInput.addEventListener("input", scheduleTrackSearch);
+      els.trackSearchInput.addEventListener("focus", () => {
+        state.search.visible = true;
+        renderSearchPanel();
+        if (getSearchQuery().length >= SEARCH_MIN_QUERY && !state.search.items.length) {
+          scheduleTrackSearch();
+        }
+      });
+      els.trackSearchInput.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          state.search.visible = false;
+          renderSearchPanel();
+          els.trackSearchInput.blur();
+        }
+      });
+    }
+
+    if (els.trackSearchClear) {
+      els.trackSearchClear.onclick = () => {
+        if (state.search.debounceTimer) clearTimeout(state.search.debounceTimer);
+        if (els.trackSearchInput) {
+          els.trackSearchInput.value = "";
+          els.trackSearchInput.focus();
+        }
+        state.search.visible = true;
+        resetSearchResults("");
+      };
+    }
+
+    document.addEventListener("pointerdown", (event) => {
+      if (!state.search.visible || !els.trackSearchBox) return;
+      if (!els.trackSearchBox.contains(event.target)) {
+        state.search.visible = false;
+        renderSearchPanel();
+      }
     });
     els.btnPlayPause.onclick = () => {
       const statusName = String(state.playback.status?.state || "idle").toLowerCase();

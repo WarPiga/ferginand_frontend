@@ -29,6 +29,7 @@ def test_frontend_sends_required_phase6_commands():
         "cmd.get_snapshot",
         "cmd.get_history",
         "cmd.get_most_played",
+        "cmd.search_tracks",
     ]:
         assert command in source
 
@@ -43,6 +44,7 @@ def test_frontend_handles_required_relay_messages():
         "queue.updated",
         "history.snapshot",
         "most_played.snapshot",
+        "track_search.snapshot",
         "ack",
     ]:
         assert message_type in source
@@ -57,5 +59,25 @@ def test_index_has_phase6_panels():
         "mostPlayedPanel",
         "hostBadge",
         "relayBadge",
+        "trackSearchBox",
+        "trackSearchInput",
+        "trackSearchPanel",
+        "trackSearchResults",
+        "trackSearchStatus",
     ]:
         assert f'id="{element_id}"' in html
+
+
+def test_track_search_ui_contract():
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "SEARCH_DEBOUNCE_MS" in source
+    assert "SEARCH_RATE_WINDOW_MS" in source
+    assert "SEARCH_RATE_MAX" in source
+    assert "scheduleTrackSearch" in source
+    assert "applySearchSnapshot" in source
+    assert "requestId = options.requestId" in source
+    assert 'draggable="true" data-url' in source
+    assert "ondblclick" in source
+    assert "Search saved tracks or artists" in html
