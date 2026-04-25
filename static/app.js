@@ -3,6 +3,7 @@
   "use strict";
 
   const PROTOCOL_VERSION = 1;
+  const MAX_RENDERED_ITEMS = 100;
   const $ = (id) => document.getElementById(id);
 
   const els = {
@@ -118,7 +119,7 @@
   }
 
   function getRequestedBy(t) {
-    return String(t?.requestedBy || t?.requested_by || t?.who || "web");
+    return String(t?.requestedBy || t?.requested_by || t?.who || "");
   }
 
   function getDuration(t) {
@@ -147,6 +148,23 @@
         if (embed) return embed[1];
       }
     } catch (_) {}
+    return "";
+  }
+
+  function getSourceLabel(t) {
+    const explicit = String(t?.source || t?.platform || t?.extractor || "").toLowerCase();
+    if (explicit.includes("soundcloud")) return "SC";
+    if (explicit.includes("youtube") || explicit === "yt") return "YT";
+
+    const url = getTrackUrl(t);
+    if (!url) return "";
+
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      if (host.includes("soundcloud.com")) return "SC";
+      if (host.includes("youtube.com") || host.includes("youtu.be") || host.includes("music.youtube.com")) return "YT";
+    } catch (_) {}
+
     return "";
   }
 
@@ -272,32 +290,50 @@
   }
 
   function getPlaceholderThumbnail() {
-  return els.nowThumbLarge?.dataset?.placeholderThumbnail || "/static/ferg.png";
-}
-
-function setThumbBackground(container, url, isPlaceholder = false) {
-  if (!container) return;
-
-  container.innerHTML = "";
-  container.textContent = "";
-
-  container.style.backgroundImage = `url("${url}")`;
-  container.classList.toggle("placeholder", isPlaceholder);
-}
-
-function renderThumb(container, track) {
-  if (!container) return;
-
-  const placeholder = getPlaceholderThumbnail();
-  const thumb = getThumb(track);
-
-  if (!thumb) {
-    setThumbBackground(container, placeholder, true);
-    return;
+    return els.nowThumbLarge?.dataset?.placeholderThumbnail || "/static/ferg.png";
   }
 
-  setThumbBackground(container, thumb, false);
-}
+  function setThumbImage(container, url, isPlaceholder = false) {
+    if (!container) return;
+
+    container.innerHTML = "";
+    container.textContent = "";
+    container.style.backgroundImage = "";
+    container.classList.toggle("placeholder", isPlaceholder);
+
+    const img = document.createElement("img");
+    img.alt = "";
+    img.loading = "eager";
+    img.decoding = "async";
+    img.src = url;
+
+    img.onerror = () => {
+      const placeholder = getPlaceholderThumbnail();
+      if (img.src !== placeholder) {
+        img.src = placeholder;
+        container.classList.add("placeholder");
+      }
+    };
+
+    container.appendChild(img);
+  }
+
+  function renderThumb(container, track) {
+    if (!container) return;
+
+    const placeholder = getPlaceholderThumbnail();
+    const thumb = getThumb(track);
+
+    setThumbImage(container, thumb || placeholder, !thumb);
+  }
+
+  function renderThumb(container, track) {
+    if (!container) return;
+
+    const placeholder = getPlaceholderThumbnail();
+    const thumb = getThumb(track);
+    setThumbImage(container, thumb || placeholder, !thumb);
+  }
 
   function renderPlayer() {
     const now = state.playback.now;
@@ -311,9 +347,13 @@ function renderThumb(container, track) {
       syncPlayheadFromState();
     } else {
       if (els.nowTitle) els.nowTitle.textContent = getTrackTitle(now);
-      const bits = [getRequestedBy(now)];
+      const bits = [];
+      const source = getSourceLabel(now);
+      if (source) bits.push(source);
       if (now.uploader) bits.push(String(now.uploader));
       if (getDuration(now)) bits.push(fmtDur(getDuration(now)));
+      const requestedBy = getRequestedBy(now);
+      if (requestedBy && !["web", "web-user"].includes(requestedBy.toLowerCase())) bits.push(requestedBy);
       if (els.nowSub) els.nowSub.textContent = bits.filter(Boolean).join(" • ");
       renderThumb(els.nowThumbLarge, now);
       syncPlayheadFromState();
@@ -326,20 +366,21 @@ function renderThumb(container, track) {
 
   function itemMeta(track, mode) {
     const bits = [];
-    const requester = getRequestedBy(track);
-    if (requester) bits.push(requester);
+    const source = getSourceLabel(track);
+    if (source) bits.push(source);
     if (track.uploader) bits.push(String(track.uploader));
     if (getDuration(track)) bits.push(fmtDur(getDuration(track)));
+
     if (mode === "history") {
       const when = fmtDate(track.ended_at || track.endedAt || track.started_at || track.startedAt || track.playedAt || track.last_played_at);
       if (when) bits.push(when);
       if (track.finish_reason || track.finishReason) bits.push(String(track.finish_reason || track.finishReason));
     }
+
     if (mode === "most") {
       bits.push(`${getPlayCount(track)} play(s)`);
-      const when = fmtDate(track.last_played_at || track.lastPlayedAt);
-      if (when) bits.push(`last: ${when}`);
     }
+
     return bits.filter(Boolean).join(" • ");
   }
 
@@ -361,13 +402,12 @@ function renderThumb(container, track) {
           <div class="item-title">${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>` : escapeHtml(title)}</div>
           <div class="meta">${escapeHtml(itemMeta(track, mode))}</div>
         </div>
-        ${url && draggable ? `<div class="item-actions"><button type="button" data-enqueue-url="${encodeURIComponent(url)}">Add</button></div>` : ""}
       </div>`;
   }
 
   function renderList(el, items, mode, emptyText) {
     if (!el) return;
-    const list = Array.isArray(items) ? items : [];
+    const list = Array.isArray(items) ? items.slice(0, MAX_RENDERED_ITEMS) : [];
     el.innerHTML = list.length ? list.map((item) => renderItem(item, mode)).join("") : `<div class="meta">${escapeHtml(emptyText)}</div>`;
   }
 
@@ -402,8 +442,8 @@ function renderThumb(container, track) {
       state.relay.connectedUsers = Number(message.connectedUsers || 0) || 0;
       renderAll();
       sendCommand("cmd.get_snapshot", {}, { toastAck: false }).catch(() => {});
-      sendCommand("cmd.get_history", { limit: 100 }, { toastAck: false }).catch(() => {});
-      sendCommand("cmd.get_most_played", { limit: 100 }, { toastAck: false }).catch(() => {});
+      sendCommand("cmd.get_history", { limit: MAX_RENDERED_ITEMS }, { toastAck: false }).catch(() => {});
+      sendCommand("cmd.get_most_played", { limit: MAX_RENDERED_ITEMS }, { toastAck: false }).catch(() => {});
       return;
     }
 
@@ -604,10 +644,6 @@ function renderThumb(container, track) {
   }
 
   function wireDynamicActions() {
-    document.querySelectorAll("[data-enqueue-url]").forEach((btn) => {
-      btn.onclick = () => enqueueUrl(decodeURIComponent(btn.getAttribute("data-enqueue-url") || ""));
-    });
-
     document.querySelectorAll(".queue-item[draggable='true']").forEach((node) => {
       node.ondragstart = (event) => {
         const url = decodeURIComponent(node.getAttribute("data-url") || "");
@@ -812,8 +848,8 @@ function renderThumb(container, track) {
     };
     els.btnSkip.onclick = () => sendCommand("cmd.skip");
     els.btnStop.onclick = () => sendCommand("cmd.stop");
-    els.btnRefreshHistory.onclick = () => sendCommand("cmd.get_history", { limit: 100 }, { toastAck: false });
-    els.btnRefreshMost.onclick = () => sendCommand("cmd.get_most_played", { limit: 100 }, { toastAck: false });
+    els.btnRefreshHistory.onclick = () => sendCommand("cmd.get_history", { limit: MAX_RENDERED_ITEMS }, { toastAck: false });
+    els.btnRefreshMost.onclick = () => sendCommand("cmd.get_most_played", { limit: MAX_RENDERED_ITEMS }, { toastAck: false });
 
     if (els.btnUpdateFrontend) {
       els.btnUpdateFrontend.onclick = () => updateFrontend();
