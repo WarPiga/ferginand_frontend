@@ -9,6 +9,7 @@
   const SEARCH_DEBOUNCE_MS = 240;
   const SEARCH_RATE_WINDOW_MS = 2000;
   const SEARCH_RATE_MAX = 7;
+  const RESYNC_RETRY_DELAYS_MS = [0, 1000, 3000, 7000];
   const $ = (id) => document.getElementById(id);
 
   const els = {
@@ -51,9 +52,11 @@
     ws: null,
     connected: false,
     manualDisconnect: false,
+    connectionSeq: 0,
     reconnectAttempt: 0,
     reconnectTimer: null,
     heartbeatTimer: null,
+    resyncTimers: [],
     pending: new Map(),
     profile: {
       relayUrl: "",
@@ -689,14 +692,46 @@
     wireDynamicActions();
   }
 
+  function clearResyncTimers() {
+    state.resyncTimers.forEach((timer) => clearTimeout(timer));
+    state.resyncTimers = [];
+  }
+
+  function requestFreshPlaybackState() {
+    if (!state.connected) return;
+    sendCommand("cmd.get_snapshot", {}, { toastAck: false }).catch(() => {});
+    sendCommand("cmd.get_history", { limit: MAX_RENDERED_ITEMS }, { toastAck: false }).catch(() => {});
+    sendCommand("cmd.get_most_played", { limit: MAX_RENDERED_ITEMS }, { toastAck: false }).catch(() => {});
+  }
+
+  function scheduleFreshPlaybackStateRequests() {
+    clearResyncTimers();
+    state.resyncTimers = RESYNC_RETRY_DELAYS_MS.map((delay) => setTimeout(requestFreshPlaybackState, delay));
+  }
+
   function applySnapshot(payload) {
     const p = payload || {};
+    const hasStatus = !!p.status;
+    const snapshotHostConnected = hasStatus
+      ? !!p.status.hostConnected
+      : !!state.relay.hostConnected;
+    const hasNow = Object.prototype.hasOwnProperty.call(p, "now");
+    const hasQueue = Array.isArray(p.queue);
+    const snapshotLooksLikeHostGap = !snapshotHostConnected &&
+      hasNow &&
+      !p.now &&
+      hasQueue &&
+      p.queue.length === 0 &&
+      (!!state.playback.now || state.playback.queue.length > 0);
+
     if (p.status) {
-      state.playback.status = p.status;
+      state.playback.status = snapshotLooksLikeHostGap
+        ? { ...state.playback.status, hostConnected: false, voiceConnected: !!p.status.voiceConnected }
+        : p.status;
       state.relay.hostConnected = !!p.status.hostConnected;
     }
-    if (Object.prototype.hasOwnProperty.call(p, "now")) state.playback.now = p.now;
-    if (Array.isArray(p.queue)) state.playback.queue = p.queue;
+    if (hasNow && !snapshotLooksLikeHostGap) state.playback.now = p.now;
+    if (hasQueue && !snapshotLooksLikeHostGap) state.playback.queue = p.queue;
     if (Array.isArray(p.history)) state.playback.history = p.history;
     if (Array.isArray(p.mostPlayed)) state.playback.mostPlayed = p.mostPlayed;
     if (Array.isArray(p.most_played)) state.playback.mostPlayed = p.most_played;
@@ -710,9 +745,7 @@
       state.relay.hostConnected = !!message.hostConnected;
       state.relay.connectedUsers = Number(message.connectedUsers || 0) || 0;
       renderAll();
-      sendCommand("cmd.get_snapshot", {}, { toastAck: false }).catch(() => {});
-      sendCommand("cmd.get_history", { limit: MAX_RENDERED_ITEMS }, { toastAck: false }).catch(() => {});
-      sendCommand("cmd.get_most_played", { limit: MAX_RENDERED_ITEMS }, { toastAck: false }).catch(() => {});
+      scheduleFreshPlaybackStateRequests();
       return;
     }
 
@@ -722,20 +755,39 @@
     }
 
     if (type === "status.updated") {
-      state.playback.status = message.status || {};
-      state.relay.hostConnected = !!state.playback.status.hostConnected;
+      const wasHostConnected = !!state.relay.hostConnected;
+      const nextStatus = message.status || {};
+      const hostConnected = !!nextStatus.hostConnected;
+      const preservePlaybackStatus = !hostConnected && (!!state.playback.now || state.playback.queue.length > 0);
+      state.playback.status = preservePlaybackStatus
+        ? { ...state.playback.status, hostConnected: false, voiceConnected: !!nextStatus.voiceConnected }
+        : nextStatus;
+      state.relay.hostConnected = hostConnected;
       renderAll();
+      if (!wasHostConnected && state.relay.hostConnected) {
+        scheduleFreshPlaybackStateRequests();
+      }
       return;
     }
 
     if (type === "now.updated") {
-      state.playback.now = message.now || null;
+      const nextNow = message.now || null;
+      if (!state.relay.hostConnected && !nextNow && state.playback.now) {
+        renderAll();
+        return;
+      }
+      state.playback.now = nextNow;
       renderAll();
       return;
     }
 
     if (type === "queue.updated") {
-      state.playback.queue = Array.isArray(message.queue) ? message.queue : [];
+      const nextQueue = Array.isArray(message.queue) ? message.queue : [];
+      if (!state.relay.hostConnected && nextQueue.length === 0 && state.playback.queue.length > 0) {
+        renderAll();
+        return;
+      }
+      state.playback.queue = nextQueue;
       renderAll();
       return;
     }
@@ -817,8 +869,20 @@
     state.heartbeatTimer = null;
   }
 
+  function closeCurrentSocket() {
+    const ws = state.ws;
+    state.ws = null;
+    if (ws) {
+      try { ws.close(); } catch (_) {}
+    }
+  }
+
   function connect() {
-    disconnect(false);
+    clearResyncTimers();
+    if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+    closeCurrentSocket();
+    markDisconnected({ preservePlayback: true });
     const profile = getActiveProfile();
     if (!profile.relayUrl || !profile.token) {
       toast("Relay URL or token is missing. Check the local .env file.", false);
@@ -838,12 +902,18 @@
 
     try {
       const ws = new WebSocket(url);
+      const connectionSeq = ++state.connectionSeq;
       state.ws = ws;
       if (els.connState) els.connState.textContent = "Connecting…";
 
       ws.addEventListener("open", () => {
+        if (ws !== state.ws || connectionSeq !== state.connectionSeq) {
+          try { ws.close(); } catch (_) {}
+          return;
+        }
         state.connected = true;
         state.reconnectAttempt = 0;
+        state.reconnectTimer = null;
         sendRaw({ type: "hello", role: profile.role, clientName: profile.clientName, serverId: profile.serverId, protocol: PROTOCOL_VERSION });
         startHeartbeat();
         renderAll();
@@ -851,6 +921,7 @@
       });
 
       ws.addEventListener("message", (event) => {
+        if (ws !== state.ws || connectionSeq !== state.connectionSeq) return;
         try {
           const message = JSON.parse(event.data);
           handleMessage(message);
@@ -860,7 +931,9 @@
       });
 
       ws.addEventListener("close", () => {
-        markDisconnected();
+        if (ws !== state.ws || connectionSeq !== state.connectionSeq) return;
+        state.ws = null;
+        markDisconnected({ preservePlayback: true });
         scheduleReconnect();
       });
 
@@ -868,16 +941,19 @@
         // close will usually follow; keep this quiet to avoid duplicate noise
       });
     } catch (err) {
-      markDisconnected();
+      markDisconnected({ preservePlayback: true });
       toast(`Connection failed: ${err.message}`, false);
       scheduleReconnect();
     }
   }
 
-  function markDisconnected() {
+  function markDisconnected(options = {}) {
+    const preservePlayback = !!options.preservePlayback;
     state.connected = false;
     state.relay.hostConnected = false;
-    state.playback.status = { state: "offline", hostConnected: false, voiceConnected: false };
+    state.playback.status = preservePlayback
+      ? { ...state.playback.status, hostConnected: false, voiceConnected: false }
+      : { state: "offline", hostConnected: false, voiceConnected: false };
     stopHeartbeat();
     for (const [reqId, pending] of state.pending.entries()) {
       clearTimeout(pending.timer);
@@ -901,12 +977,11 @@
     if (manual) state.manualDisconnect = true;
     if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
     state.reconnectTimer = null;
+    clearResyncTimers();
     stopHeartbeat();
-    if (state.ws) {
-      try { state.ws.close(); } catch (_) {}
-    }
-    state.ws = null;
-    markDisconnected();
+    closeCurrentSocket();
+    if (manual) state.connectionSeq += 1;
+    markDisconnected({ preservePlayback: !manual });
   }
 
   async function enqueueUrl(url) {
