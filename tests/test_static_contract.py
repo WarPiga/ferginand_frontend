@@ -99,3 +99,13 @@ def test_playhead_seek_ui_contract():
     assert "{ requestId, toastAck: false, timeoutMs: SEEK_RESET_MS }" in source
     assert 'addEventListener("input", updateSeekPreview)' in source
     assert 'addEventListener("pointerup"' in source
+
+
+def test_playhead_uses_host_position_anchor_not_started_at():
+    source = APP_JS.read_text(encoding="utf-8")
+
+    assert "getHostPosition" in source
+    assert "positionMs" in source
+    assert "positionUpdatedAt" in source
+    assert "now?.paused !== false" in source
+    assert "startedAt" not in source

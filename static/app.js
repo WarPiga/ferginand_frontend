@@ -191,8 +191,34 @@
     return "";
   }
 
+  function secondsFromTimestamp(value) {
+    if (value === null || value === undefined || value === "") return 0;
+    if (typeof value === "string" && Number.isNaN(Number(value))) {
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed / 1000 : 0;
+    }
+
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return n > 100000000000 ? n / 1000 : n;
+  }
+
   function getDuration(t) {
+    const durationMs = Number(t?.durationMs ?? t?.lengthMs);
+    if (Number.isFinite(durationMs) && durationMs > 0) return durationMs / 1000;
     return Number(t?.duration || t?.durationSeconds || 0) || 0;
+  }
+
+  function getHostPosition(t) {
+    const positionMs = Number(t?.positionMs);
+    if (Number.isFinite(positionMs) && positionMs >= 0) return positionMs / 1000;
+
+    const position = Number(t?.position ?? t?.positionSeconds ?? 0);
+    return Number.isFinite(position) && position >= 0 ? position : 0;
+  }
+
+  function getPositionUpdatedAt(t) {
+    return secondsFromTimestamp(t?.positionUpdatedAt ?? t?.position_updated_at ?? t?.updatedAt ?? t?.updated_at);
   }
 
   function getPlayCount(t) {
@@ -348,13 +374,12 @@
 
   function syncPlayheadFromState() {
     const now = state.playback.now;
-    const statusName = String(state.playback.status?.state || "idle").toLowerCase();
     const key = getTrackKey(now);
     const duration = getDuration(now);
-    const paused = !!now?.paused || statusName === "paused";
-    const playing = !!now && statusName === "playing" && !paused;
-    const serverPosition = Number(now?.position || 0) || 0;
-    const startedAt = Number(now?.startedAt || 0) || 0;
+    const paused = now?.paused !== false;
+    const playing = !!now && !paused;
+    const hostPosition = getHostPosition(now);
+    const positionUpdatedAt = getPositionUpdatedAt(now);
     const currentUnix = Date.now() / 1000;
 
     playhead.duration = duration;
@@ -371,9 +396,9 @@
       return;
     }
 
-    const computedElapsed = playing && startedAt > 0
-      ? Math.max(serverPosition, currentUnix - startedAt)
-      : serverPosition;
+    const computedElapsed = playing && positionUpdatedAt > 0
+      ? hostPosition + Math.max(0, currentUnix - positionUpdatedAt)
+      : hostPosition;
 
     if (key !== playhead.key) {
       playhead.key = key;
@@ -381,7 +406,7 @@
       playhead.previewElapsed = computedElapsed;
       playhead.seeking = false;
       playhead.pointerSeeking = false;
-    } else if (!playing || serverPosition > 0) {
+    } else {
       playhead.elapsed = computedElapsed;
     }
 
