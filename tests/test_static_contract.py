@@ -30,6 +30,7 @@ def test_frontend_sends_required_phase6_commands():
         "cmd.get_history",
         "cmd.get_most_played",
         "cmd.search_tracks",
+        "cmd.seek",
     ]:
         assert command in source
 
@@ -81,3 +82,20 @@ def test_track_search_ui_contract():
     assert 'draggable="true" data-url' in source
     assert "ondblclick" in source
     assert "Search saved tracks or artists" in html
+
+
+def test_playhead_seek_ui_contract():
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert 'id="playheadSeek"' in html
+    assert 'type="range"' in html
+    assert 'aria-label="Seek playback position"' in html
+    assert "SEEK_RESET_MS" in source
+    assert "wirePlayheadSeek" in source
+    assert "seekToPosition" in source
+    assert "resetPlayheadToServerEstimate" in source
+    assert 'sendCommand("cmd.seek", { position: target }' in source
+    assert "{ requestId, toastAck: false, timeoutMs: SEEK_RESET_MS }" in source
+    assert 'addEventListener("input", updateSeekPreview)' in source
+    assert 'addEventListener("pointerup"' in source

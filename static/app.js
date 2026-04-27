@@ -10,6 +10,7 @@
   const SEARCH_RATE_WINDOW_MS = 2000;
   const SEARCH_RATE_MAX = 7;
   const RESYNC_RETRY_DELAYS_MS = [0, 1000, 3000, 7000];
+  const SEEK_RESET_MS = 2500;
   const $ = (id) => document.getElementById(id);
 
   const els = {
@@ -43,7 +44,9 @@
     nowThumbLarge: $("nowThumbLarge"),
     nowTitle: $("nowTitle"),
     nowSub: $("nowSub"),
+    playhead: $("playhead"),
     playheadFill: $("playheadFill"),
+    playheadSeek: $("playheadSeek"),
     playheadText: $("playheadText"),
     toast: $("toast"),
   };
@@ -102,7 +105,14 @@
     key: "",
     duration: 0,
     elapsed: 0,
+    previewElapsed: 0,
     playing: false,
+    seeking: false,
+    pointerSeeking: false,
+    ignoreNextSeekChange: false,
+    lastCommittedSeek: null,
+    pendingSeekRequestId: "",
+    pendingSeekTimer: null,
     lastTickMs: Date.now(),
   };
 
@@ -302,11 +312,38 @@
     setControlsEnabled();
   }
 
+  function clampPlayheadPosition(value, duration = playhead.duration) {
+    const dur = Math.max(0, Number(duration) || 0);
+    return Math.max(0, Math.min(dur || Number.MAX_SAFE_INTEGER, Number(value) || 0));
+  }
+
+  function canSeekPlayback(duration = playhead.duration) {
+    return state.connected &&
+      !!state.relay.hostConnected &&
+      !!state.playback.now &&
+      Number(duration) > 0;
+  }
+
   function setPlayheadUI(elapsed, duration) {
     const dur = Math.max(0, Number(duration) || 0);
-    const el = Math.max(0, Math.min(dur || Number.MAX_SAFE_INTEGER, Number(elapsed) || 0));
+    const displayElapsed = playhead.seeking ? playhead.previewElapsed : elapsed;
+    const el = clampPlayheadPosition(displayElapsed, dur);
+    const canSeek = canSeekPlayback(dur);
     if (els.playheadFill) els.playheadFill.style.width = dur > 0 ? `${(el / dur) * 100}%` : "0%";
     if (els.playheadText) els.playheadText.textContent = dur > 0 ? `${fmtDur(el)} / ${fmtDur(dur)}` : "";
+    if (els.playhead) {
+      els.playhead.classList.toggle("seek-disabled", !canSeek);
+      els.playhead.title = canSeek ? "Drag to seek" : "Seek is available while a track is loaded";
+    }
+    if (els.playheadSeek) {
+      const max = dur > 0 ? Math.max(1, Math.round(dur)) : 0;
+      els.playheadSeek.max = String(max);
+      els.playheadSeek.value = String(Math.round(clampPlayheadPosition(el, max)));
+      els.playheadSeek.disabled = !canSeek;
+      els.playheadSeek.setAttribute("aria-valuemax", String(max));
+      els.playheadSeek.setAttribute("aria-valuenow", String(Math.round(el)));
+      els.playheadSeek.setAttribute("aria-valuetext", dur > 0 ? `${fmtDur(el)} of ${fmtDur(dur)}` : "No track loaded");
+    }
   }
 
   function syncPlayheadFromState() {
@@ -327,6 +364,9 @@
     if (!now) {
       playhead.key = "";
       playhead.elapsed = 0;
+      playhead.previewElapsed = 0;
+      playhead.seeking = false;
+      playhead.pointerSeeking = false;
       setPlayheadUI(0, 0);
       return;
     }
@@ -338,6 +378,9 @@
     if (key !== playhead.key) {
       playhead.key = key;
       playhead.elapsed = computedElapsed;
+      playhead.previewElapsed = computedElapsed;
+      playhead.seeking = false;
+      playhead.pointerSeeking = false;
     } else if (!playing || serverPosition > 0) {
       playhead.elapsed = computedElapsed;
     }
@@ -704,6 +747,22 @@
     sendCommand("cmd.get_most_played", { limit: MAX_RENDERED_ITEMS }, { toastAck: false }).catch(() => {});
   }
 
+  function clearPendingSeekReset(requestId = "") {
+    if (requestId && playhead.pendingSeekRequestId !== requestId) return;
+    if (playhead.pendingSeekTimer) clearTimeout(playhead.pendingSeekTimer);
+    playhead.pendingSeekTimer = null;
+    if (!requestId || playhead.pendingSeekRequestId === requestId) {
+      playhead.pendingSeekRequestId = "";
+    }
+  }
+
+  function resetPlayheadToServerEstimate() {
+    playhead.seeking = false;
+    playhead.pointerSeeking = false;
+    syncPlayheadFromState();
+    requestFreshPlaybackState();
+  }
+
   function scheduleFreshPlaybackStateRequests() {
     clearResyncTimers();
     state.resyncTimers = RESYNC_RETRY_DELAYS_MS.map((delay) => setTimeout(requestFreshPlaybackState, delay));
@@ -992,6 +1051,99 @@
       requestedBy: state.profile.requestedBy || "web-user",
     });
     if (els.q && els.q.value.trim() === cleaned) els.q.value = "";
+  }
+
+  function getSeekInputPosition() {
+    return clampPlayheadPosition(Number(els.playheadSeek?.value || 0), playhead.duration);
+  }
+
+  async function seekToPosition(position) {
+    if (!canSeekPlayback()) return;
+
+    const target = Math.round(clampPlayheadPosition(position));
+    const requestId = newRequestId();
+    clearPendingSeekReset();
+
+    playhead.elapsed = target;
+    playhead.previewElapsed = target;
+    playhead.lastCommittedSeek = target;
+    playhead.pendingSeekRequestId = requestId;
+    setPlayheadUI(target, playhead.duration);
+
+    playhead.pendingSeekTimer = setTimeout(() => {
+      if (playhead.pendingSeekRequestId !== requestId) return;
+      clearPendingSeekReset(requestId);
+      resetPlayheadToServerEstimate();
+    }, SEEK_RESET_MS);
+
+    try {
+      await sendCommand("cmd.seek", { position: target }, { requestId, toastAck: false, timeoutMs: SEEK_RESET_MS });
+      clearPendingSeekReset(requestId);
+    } catch (err) {
+      clearPendingSeekReset(requestId);
+      const message = String(err?.message || "");
+      toast(message.toLowerCase().includes("permission")
+        ? "Seek denied by relay permissions. Allow cmd.seek on the backend."
+        : message || "Seek failed.", false);
+      resetPlayheadToServerEstimate();
+    }
+  }
+
+  function beginSeekPreview() {
+    if (!canSeekPlayback()) return false;
+    playhead.seeking = true;
+    playhead.previewElapsed = getSeekInputPosition();
+    setPlayheadUI(playhead.previewElapsed, playhead.duration);
+    return true;
+  }
+
+  function updateSeekPreview() {
+    if (!playhead.seeking && !beginSeekPreview()) return;
+    playhead.previewElapsed = getSeekInputPosition();
+    setPlayheadUI(playhead.previewElapsed, playhead.duration);
+  }
+
+  function finishSeekPreview(commit = true) {
+    if (!playhead.seeking) return;
+    const target = getSeekInputPosition();
+    playhead.seeking = false;
+    playhead.pointerSeeking = false;
+    setPlayheadUI(commit ? target : playhead.elapsed, playhead.duration);
+    if (commit) seekToPosition(target);
+  }
+
+  function wirePlayheadSeek() {
+    if (!els.playheadSeek) return;
+
+    els.playheadSeek.addEventListener("pointerdown", (event) => {
+      if (!beginSeekPreview()) return;
+      playhead.pointerSeeking = true;
+      try { els.playheadSeek.setPointerCapture(event.pointerId); } catch (_) {}
+    });
+
+    els.playheadSeek.addEventListener("input", updateSeekPreview);
+
+    els.playheadSeek.addEventListener("pointerup", () => {
+      if (!playhead.pointerSeeking) return;
+      playhead.ignoreNextSeekChange = true;
+      finishSeekPreview(true);
+    });
+
+    els.playheadSeek.addEventListener("pointercancel", () => {
+      finishSeekPreview(false);
+    });
+
+    els.playheadSeek.addEventListener("change", () => {
+      const target = Math.round(getSeekInputPosition());
+      if (playhead.ignoreNextSeekChange && target === playhead.lastCommittedSeek) {
+        playhead.ignoreNextSeekChange = false;
+        return;
+      }
+      playhead.ignoreNextSeekChange = false;
+      playhead.seeking = false;
+      playhead.pointerSeeking = false;
+      seekToPosition(target);
+    });
   }
 
   function wireDynamicActions() {
@@ -1285,6 +1437,7 @@
   async function boot() {
     wireStaticActions();
     wireDropTarget();
+    wirePlayheadSeek();
     setInterval(tickPlayhead, 250);
 
     let cfg = { relayUrl: "", token: "", role: "user", requestedBy: "web-user", clientName: "web-client", serverId: "main", autoConnect: false };
