@@ -17,7 +17,8 @@ def test_index_serves_frontend():
     assert response.status_code == 200
     html = response.get_data(as_text=True)
     assert "Ferginánd" in html
-    assert "/static/app.js" in html
+    assert "/static/app.js?v=" in html
+    assert "/static/styles.css?v=" in html
     assert "Most played" in html
 
 

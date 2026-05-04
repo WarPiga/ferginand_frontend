@@ -105,7 +105,43 @@ def test_playhead_uses_host_position_anchor_not_started_at():
     source = APP_JS.read_text(encoding="utf-8")
 
     assert "getHostPosition" in source
+    assert "getPlayheadAnchorSignature" in source
+    assert "setPlaybackNowFromHost" in source
+    assert "anchorSignature" in source
+    assert "anchorUpdatedAt" in source
     assert "positionMs" in source
     assert "positionUpdatedAt" in source
     assert "now?.paused !== false" in source
     assert "startedAt" not in source
+
+
+def test_reconnect_requests_playhead_snapshot_immediately():
+    source = APP_JS.read_text(encoding="utf-8")
+
+    assert "function requestPlaybackSnapshot" in source
+    assert "newPlayheadSnapshotRequestId" in source
+    assert "playhead-reconnect-" in source
+    assert '"cmd.get_snapshot"' in source
+    assert 'sendRaw({ type: "snapshot", requestId: newPlayheadSnapshotRequestId() })' in source
+    assert 'sendRaw({ type: "hello", role: profile.role, clientName: profile.clientName, serverId: profile.serverId, protocol: PROTOCOL_VERSION });\n        requestPlaybackSnapshot();' in source
+    assert "requestPlaybackSnapshot();\n    state.resyncTimers" in source
+    assert "const RESYNC_RETRY_DELAYS_MS = [1000, 3000, 7000]" in source
+
+
+def test_relay_update_handlers_accept_payload_wrapped_messages():
+    source = APP_JS.read_text(encoding="utf-8")
+
+    assert "getMessageStatus" in source
+    assert "getMessageNow" in source
+    assert "getMessageQueue" in source
+    assert 'ownProp(payload, "now")' in source
+    assert 'ownProp(p.status, "hostConnected")' in source
+    assert 'ownProp(nextStatus, "hostConnected")' in source
+    assert "messageLooksLikeNowPayload(payload)" in source
+    assert "Array.isArray(payload.queue)" in source
+
+
+def test_now_playing_metadata_does_not_duplicate_duration():
+    source = APP_JS.read_text(encoding="utf-8")
+
+    assert "bits.push(fmtDur(getDuration(now)))" not in source

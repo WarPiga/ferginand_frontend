@@ -9,7 +9,7 @@
   const SEARCH_DEBOUNCE_MS = 240;
   const SEARCH_RATE_WINDOW_MS = 2000;
   const SEARCH_RATE_MAX = 7;
-  const RESYNC_RETRY_DELAYS_MS = [0, 1000, 3000, 7000];
+  const RESYNC_RETRY_DELAYS_MS = [1000, 3000, 7000];
   const SEEK_RESET_MS = 2500;
   const $ = (id) => document.getElementById(id);
 
@@ -57,6 +57,7 @@
     manualDisconnect: false,
     connectionSeq: 0,
     reconnectAttempt: 0,
+    playheadReconnectSeq: 0,
     reconnectTimer: null,
     heartbeatTimer: null,
     resyncTimers: [],
@@ -113,6 +114,8 @@
     lastCommittedSeek: null,
     pendingSeekRequestId: "",
     pendingSeekTimer: null,
+    anchorSignature: "",
+    anchorUpdatedAt: 0,
     lastTickMs: Date.now(),
   };
 
@@ -142,6 +145,11 @@
   function newRequestId() {
     if (crypto?.randomUUID) return crypto.randomUUID();
     return `req_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  }
+
+  function newPlayheadSnapshotRequestId() {
+    state.playheadReconnectSeq += 1;
+    return `playhead-reconnect-${state.playheadReconnectSeq}`;
   }
 
   function getTrackUrl(t) {
@@ -219,6 +227,17 @@
 
   function getPositionUpdatedAt(t) {
     return secondsFromTimestamp(t?.positionUpdatedAt ?? t?.position_updated_at ?? t?.updatedAt ?? t?.updated_at);
+  }
+
+  function getPlayheadAnchorSignature(t, key) {
+    if (!t) return "";
+    return [
+      key,
+      t?.positionMs ?? "",
+      t?.position ?? t?.positionSeconds ?? "",
+      t?.positionUpdatedAt ?? t?.position_updated_at ?? t?.updatedAt ?? t?.updated_at ?? "",
+      t?.paused === false ? "playing" : "paused",
+    ].join("|");
   }
 
   function getPlayCount(t) {
@@ -392,22 +411,36 @@
       playhead.previewElapsed = 0;
       playhead.seeking = false;
       playhead.pointerSeeking = false;
+      playhead.anchorSignature = "";
+      playhead.anchorUpdatedAt = 0;
       setPlayheadUI(0, 0);
       return;
     }
 
+    const anchorSignature = getPlayheadAnchorSignature(now, key);
+    const hasNewHostAnchor = anchorSignature !== playhead.anchorSignature;
     const computedElapsed = playing && positionUpdatedAt > 0
       ? hostPosition + Math.max(0, currentUnix - positionUpdatedAt)
       : hostPosition;
 
     if (key !== playhead.key) {
       playhead.key = key;
+      playhead.anchorSignature = anchorSignature;
+      playhead.anchorUpdatedAt = positionUpdatedAt;
       playhead.elapsed = computedElapsed;
       playhead.previewElapsed = computedElapsed;
       playhead.seeking = false;
       playhead.pointerSeeking = false;
-    } else {
+    } else if (hasNewHostAnchor && (
+      !playing ||
+      positionUpdatedAt <= 0 ||
+      playhead.anchorUpdatedAt <= 0 ||
+      positionUpdatedAt >= playhead.anchorUpdatedAt
+    )) {
+      playhead.anchorSignature = anchorSignature;
+      playhead.anchorUpdatedAt = positionUpdatedAt;
       playhead.elapsed = computedElapsed;
+      if (!playhead.seeking) playhead.previewElapsed = computedElapsed;
     }
 
     setPlayheadUI(playhead.elapsed, playhead.duration);
@@ -477,7 +510,6 @@
       const source = getSourceLabel(now);
       if (source) bits.push(source);
       if (now.uploader) bits.push(String(now.uploader));
-      if (getDuration(now)) bits.push(fmtDur(getDuration(now)));
       const requestedBy = getRequestedBy(now);
       if (requestedBy && !["web", "web-user"].includes(requestedBy.toLowerCase())) bits.push(requestedBy);
       if (els.nowSub) els.nowSub.textContent = bits.filter(Boolean).join(" • ");
@@ -765,9 +797,23 @@
     state.resyncTimers = [];
   }
 
+  function requestPlaybackSnapshot() {
+    if (!state.connected) return;
+    sendCommand(
+      "cmd.get_snapshot",
+      {},
+      { requestId: newPlayheadSnapshotRequestId(), toastAck: false, timeoutMs: 5000 }
+    ).catch(() => {
+      if (!state.connected) return;
+      try {
+        sendRaw({ type: "snapshot", requestId: newPlayheadSnapshotRequestId() });
+      } catch (_) {}
+    });
+  }
+
   function requestFreshPlaybackState() {
     if (!state.connected) return;
-    sendCommand("cmd.get_snapshot", {}, { toastAck: false }).catch(() => {});
+    requestPlaybackSnapshot();
     sendCommand("cmd.get_history", { limit: MAX_RENDERED_ITEMS }, { toastAck: false }).catch(() => {});
     sendCommand("cmd.get_most_played", { limit: MAX_RENDERED_ITEMS }, { toastAck: false }).catch(() => {});
   }
@@ -790,16 +836,67 @@
 
   function scheduleFreshPlaybackStateRequests() {
     clearResyncTimers();
+    requestPlaybackSnapshot();
     state.resyncTimers = RESYNC_RETRY_DELAYS_MS.map((delay) => setTimeout(requestFreshPlaybackState, delay));
+  }
+
+  function setPlaybackNowFromHost(now) {
+    state.playback.now = now;
+    playhead.anchorSignature = "";
+    playhead.anchorUpdatedAt = 0;
+  }
+
+  function ownProp(obj, key) {
+    return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+  }
+
+  function objectPayload(message) {
+    return message?.payload && typeof message.payload === "object" ? message.payload : {};
+  }
+
+  function messageLooksLikeNowPayload(value) {
+    return !!value && typeof value === "object" && (
+      ownProp(value, "position") ||
+      ownProp(value, "positionMs") ||
+      ownProp(value, "positionUpdatedAt") ||
+      ownProp(value, "paused") ||
+      ownProp(value, "trackStartedAt") ||
+      ownProp(value, "title")
+    );
+  }
+
+  function getMessageStatus(message) {
+    const payload = objectPayload(message);
+    if (message?.status) return message.status;
+    if (payload.status) return payload.status;
+    if (ownProp(payload, "state") || ownProp(payload, "hostConnected")) return payload;
+    return {};
+  }
+
+  function getMessageNow(message) {
+    const payload = objectPayload(message);
+    if (ownProp(message, "now")) return message.now;
+    if (ownProp(payload, "now")) return payload.now;
+    if (messageLooksLikeNowPayload(payload)) return payload;
+    return null;
+  }
+
+  function getMessageQueue(message) {
+    const payload = objectPayload(message);
+    if (Array.isArray(message?.queue)) return message.queue;
+    if (Array.isArray(payload.queue)) return payload.queue;
+    if (Array.isArray(payload.items)) return payload.items;
+    return [];
   }
 
   function applySnapshot(payload) {
     const p = payload || {};
     const hasStatus = !!p.status;
+    const statusHasHostConnected = hasStatus && ownProp(p.status, "hostConnected");
     const snapshotHostConnected = hasStatus
-      ? !!p.status.hostConnected
+      ? (statusHasHostConnected ? !!p.status.hostConnected : !!state.relay.hostConnected)
       : !!state.relay.hostConnected;
-    const hasNow = Object.prototype.hasOwnProperty.call(p, "now");
+    const hasNow = ownProp(p, "now");
     const hasQueue = Array.isArray(p.queue);
     const snapshotLooksLikeHostGap = !snapshotHostConnected &&
       hasNow &&
@@ -812,9 +909,9 @@
       state.playback.status = snapshotLooksLikeHostGap
         ? { ...state.playback.status, hostConnected: false, voiceConnected: !!p.status.voiceConnected }
         : p.status;
-      state.relay.hostConnected = !!p.status.hostConnected;
+      if (statusHasHostConnected) state.relay.hostConnected = !!p.status.hostConnected;
     }
-    if (hasNow && !snapshotLooksLikeHostGap) state.playback.now = p.now;
+    if (hasNow && !snapshotLooksLikeHostGap) setPlaybackNowFromHost(p.now);
     if (hasQueue && !snapshotLooksLikeHostGap) state.playback.queue = p.queue;
     if (Array.isArray(p.history)) state.playback.history = p.history;
     if (Array.isArray(p.mostPlayed)) state.playback.mostPlayed = p.mostPlayed;
@@ -834,19 +931,22 @@
     }
 
     if (type === "snapshot") {
-      applySnapshot(message.payload || {});
+      applySnapshot(message.payload || message.snapshot || {});
       return;
     }
 
     if (type === "status.updated") {
       const wasHostConnected = !!state.relay.hostConnected;
-      const nextStatus = message.status || {};
-      const hostConnected = !!nextStatus.hostConnected;
-      const preservePlaybackStatus = !hostConnected && (!!state.playback.now || state.playback.queue.length > 0);
+      const nextStatus = getMessageStatus(message);
+      const statusHasHostConnected = ownProp(nextStatus, "hostConnected");
+      const hostConnected = statusHasHostConnected ? !!nextStatus.hostConnected : wasHostConnected;
+      const preservePlaybackStatus = statusHasHostConnected &&
+        !hostConnected &&
+        (!!state.playback.now || state.playback.queue.length > 0);
       state.playback.status = preservePlaybackStatus
         ? { ...state.playback.status, hostConnected: false, voiceConnected: !!nextStatus.voiceConnected }
         : nextStatus;
-      state.relay.hostConnected = hostConnected;
+      if (statusHasHostConnected) state.relay.hostConnected = hostConnected;
       renderAll();
       if (!wasHostConnected && state.relay.hostConnected) {
         scheduleFreshPlaybackStateRequests();
@@ -855,18 +955,18 @@
     }
 
     if (type === "now.updated") {
-      const nextNow = message.now || null;
+      const nextNow = getMessageNow(message);
       if (!state.relay.hostConnected && !nextNow && state.playback.now) {
         renderAll();
         return;
       }
-      state.playback.now = nextNow;
+      setPlaybackNowFromHost(nextNow);
       renderAll();
       return;
     }
 
     if (type === "queue.updated") {
-      const nextQueue = Array.isArray(message.queue) ? message.queue : [];
+      const nextQueue = getMessageQueue(message);
       if (!state.relay.hostConnected && nextQueue.length === 0 && state.playback.queue.length > 0) {
         renderAll();
         return;
@@ -999,6 +1099,7 @@
         state.reconnectAttempt = 0;
         state.reconnectTimer = null;
         sendRaw({ type: "hello", role: profile.role, clientName: profile.clientName, serverId: profile.serverId, protocol: PROTOCOL_VERSION });
+        requestPlaybackSnapshot();
         startHeartbeat();
         renderAll();
         toast("Connected to relay.");

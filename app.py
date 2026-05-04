@@ -58,7 +58,12 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index():
-        return render_template("index.html")
+        static_root = Path(app.static_folder or PROJECT_ROOT / "static")
+        static_version = int(max(
+            (static_root / "app.js").stat().st_mtime,
+            (static_root / "styles.css").stat().st_mtime,
+        ))
+        return render_template("index.html", static_version=static_version)
 
     @app.get("/health")
     def health():
