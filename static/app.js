@@ -889,6 +889,13 @@
     return [];
   }
 
+  function getMessageItems(message) {
+    const payload = objectPayload(message);
+    if (Array.isArray(message?.items)) return message.items;
+    if (Array.isArray(payload.items)) return payload.items;
+    return [];
+  }
+
   function applySnapshot(payload) {
     const p = payload || {};
     const hasStatus = !!p.status;
@@ -977,13 +984,13 @@
     }
 
     if (type === "history.snapshot") {
-      state.playback.history = Array.isArray(message.items) ? message.items : [];
+      state.playback.history = getMessageItems(message);
       renderAll();
       return;
     }
 
     if (type === "most_played.snapshot") {
-      state.playback.mostPlayed = Array.isArray(message.items) ? message.items : [];
+      state.playback.mostPlayed = getMessageItems(message);
       renderAll();
       return;
     }

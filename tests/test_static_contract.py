@@ -134,11 +134,13 @@ def test_relay_update_handlers_accept_payload_wrapped_messages():
     assert "getMessageStatus" in source
     assert "getMessageNow" in source
     assert "getMessageQueue" in source
+    assert "getMessageItems" in source
     assert 'ownProp(payload, "now")' in source
     assert 'ownProp(p.status, "hostConnected")' in source
     assert 'ownProp(nextStatus, "hostConnected")' in source
     assert "messageLooksLikeNowPayload(payload)" in source
     assert "Array.isArray(payload.queue)" in source
+    assert "Array.isArray(payload.items)" in source
 
 
 def test_now_playing_metadata_does_not_duplicate_duration():
