@@ -31,6 +31,7 @@ def test_frontend_sends_required_phase6_commands():
         "cmd.get_most_played",
         "cmd.search_tracks",
         "cmd.seek",
+        "cmd.reorder_queue",
     ]:
         assert command in source
 
@@ -158,3 +159,17 @@ def test_now_playing_metadata_does_not_duplicate_duration():
     source = APP_JS.read_text(encoding="utf-8")
 
     assert "bits.push(fmtDur(getDuration(now)))" not in source
+
+
+def test_queue_reorder_ui_contract():
+    source = APP_JS.read_text(encoding="utf-8")
+
+    assert "QUEUE_REORDER_DRAG_MIME" in source
+    assert "canReorderQueue" in source
+    assert "wireQueueReorderActions" in source
+    assert 'data-queue-index="${index}"' in source
+    assert 'data-reorderable="${canMove ? "true" : "false"}"' in source
+    assert 'sendCommand(\n        "cmd.reorder_queue"' in source
+    assert "{ oldIndex: from, newIndex: to }" in source
+    assert "state.reorder.rollbackQueue" in source
+    assert "Queue reorder denied by relay permissions." in source

@@ -11,6 +11,7 @@
   const SEARCH_RATE_MAX = 7;
   const RESYNC_RETRY_DELAYS_MS = [1000, 3000, 7000];
   const SEEK_RESET_MS = 2500;
+  const QUEUE_REORDER_DRAG_MIME = "application/x-ferginand-queue-index";
   const $ = (id) => document.getElementById(id);
 
   const els = {
@@ -80,6 +81,13 @@
       queue: [],
       history: [],
       mostPlayed: [],
+    },
+    reorder: {
+      pending: false,
+      dragFromIndex: null,
+      rollbackQueue: [],
+      lastServerQueue: [],
+      lastServerQueueKnown: false,
     },
     search: {
       query: "",
@@ -588,6 +596,89 @@
       </div>`;
   }
 
+  function isAdmin() {
+    return state.profile.role === "admin";
+  }
+
+  function canReorderQueue() {
+    return isAdmin() &&
+      state.connected &&
+      !!state.relay.hostConnected &&
+      !state.reorder.pending &&
+      state.playback.queue.length > 1;
+  }
+
+  function moveQueueItem(items, fromIndex, toIndex) {
+    const next = Array.isArray(items) ? items.slice() : [];
+    if (
+      fromIndex === toIndex ||
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= next.length ||
+      toIndex >= next.length
+    ) {
+      return next;
+    }
+
+    const [item] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, item);
+    return next;
+  }
+
+  function rememberServerQueue(queue) {
+    const nextQueue = Array.isArray(queue) ? queue : [];
+    state.reorder.lastServerQueue = nextQueue.slice();
+    state.reorder.lastServerQueueKnown = true;
+    state.playback.queue = nextQueue;
+  }
+
+  async function reorderQueue(fromIndex, toIndex) {
+    const queue = state.playback.queue;
+    const from = Number(fromIndex);
+    const to = Number(toIndex);
+
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from === to) return;
+    if (!canReorderQueue()) {
+      if (!isAdmin()) toast("Only admins can reorder the queue.", false);
+      return;
+    }
+    if (from < 0 || to < 0 || from >= queue.length || to >= queue.length) return;
+
+    const previousQueue = queue.slice();
+    const rollbackQueue = state.reorder.lastServerQueueKnown
+      ? state.reorder.lastServerQueue.slice()
+      : previousQueue;
+
+    state.reorder.pending = true;
+    state.reorder.rollbackQueue = rollbackQueue;
+    state.reorder.dragFromIndex = null;
+    state.playback.queue = moveQueueItem(previousQueue, from, to);
+    renderAll();
+
+    try {
+      await sendCommand(
+        "cmd.reorder_queue",
+        { oldIndex: from, newIndex: to },
+        { toastAck: false }
+      );
+      toast("Queue order updated.");
+    } catch (err) {
+      const latestServerQueue = state.reorder.lastServerQueueKnown
+        ? state.reorder.lastServerQueue
+        : state.reorder.rollbackQueue;
+      state.playback.queue = latestServerQueue.slice();
+      const message = String(err?.message || "");
+      toast(message.toLowerCase().includes("permission")
+        ? "Queue reorder denied by relay permissions."
+        : message || "Queue reorder failed.", false);
+    } finally {
+      state.reorder.pending = false;
+      state.reorder.dragFromIndex = null;
+      state.reorder.rollbackQueue = [];
+      renderAll();
+    }
+  }
+
   function getSearchQuery() {
     return String(els.trackSearchInput?.value || "").trim();
   }
@@ -755,31 +846,54 @@
     renderSearchPanel();
   }
 
-  function renderItem(track, mode) {
+  function renderItem(track, mode, index = 0, listLength = 0) {
     const url = getTrackUrl(track);
     const title = getTrackTitle(track);
     const thumb = getThumb(track);
-    const draggable = mode === "history" || mode === "most";
-    const dragAttrs = draggable
-      ? `draggable="true" data-url="${encodeURIComponent(url)}"`
+    const isQueue = mode === "queue";
+    const canMove = isQueue && canReorderQueue();
+    const draggable = canMove || mode === "history" || mode === "most";
+    const dragAttrs = canMove
+      ? `draggable="true" aria-grabbed="false"`
+      : draggable
+        ? `draggable="true" data-url="${encodeURIComponent(url)}"`
+        : "";
+    const queueAttrs = isQueue
+      ? `data-queue-index="${index}" data-reorderable="${canMove ? "true" : "false"}"`
+      : "";
+    const queueClass = isQueue
+      ? ` queue-row${canMove ? " reorderable" : " reorder-disabled"}${state.reorder.pending ? " reorder-pending" : ""}`
+      : "";
+    const queueTitle = isQueue
+      ? canMove
+        ? "Drag to reorder queued tracks."
+        : state.reorder.pending
+          ? "Queue reorder is pending."
+          : isAdmin()
+            ? listLength > 1 ? "Connect to the host to reorder." : ""
+            : "Only admins can reorder the queue."
       : "";
     const thumbHtml = thumb
       ? `<img src="${escapeHtml(thumb)}" alt="">`
       : `<div class="thumb-fallback">♪</div>`;
+    const handleHtml = isQueue
+      ? `<span class="queue-drag-handle" aria-hidden="true">${canMove ? "Move" : ""}</span>`
+      : "";
     return `
-      <div class="queue-item" ${dragAttrs}>
+      <div class="queue-item${queueClass}" ${dragAttrs} ${queueAttrs} title="${escapeHtml(queueTitle)}">
         ${thumbHtml}
         <div class="item-main">
           <div class="item-title">${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>` : escapeHtml(title)}</div>
           <div class="meta">${escapeHtml(itemMeta(track, mode))}</div>
         </div>
+        ${handleHtml}
       </div>`;
   }
 
   function renderList(el, items, mode, emptyText) {
     if (!el) return;
     const list = Array.isArray(items) ? items.slice(0, MAX_RENDERED_ITEMS) : [];
-    el.innerHTML = list.length ? list.map((item) => renderItem(item, mode)).join("") : `<div class="meta">${escapeHtml(emptyText)}</div>`;
+    el.innerHTML = list.length ? list.map((item, index) => renderItem(item, mode, index, list.length)).join("") : `<div class="meta">${escapeHtml(emptyText)}</div>`;
   }
 
   function renderAll() {
@@ -921,7 +1035,7 @@
       if (statusHasHostConnected) state.relay.hostConnected = !!p.status.hostConnected;
     }
     if (hasNow && !snapshotLooksLikeHostGap) setPlaybackNowFromHost(p.now);
-    if (hasQueue && !snapshotLooksLikeHostGap) state.playback.queue = p.queue;
+    if (hasQueue && !snapshotLooksLikeHostGap) rememberServerQueue(p.queue);
     if (Array.isArray(p.history)) state.playback.history = p.history;
     if (Array.isArray(p.mostPlayed)) state.playback.mostPlayed = p.mostPlayed;
     if (Array.isArray(p.most_played)) state.playback.mostPlayed = p.most_played;
@@ -980,7 +1094,7 @@
         renderAll();
         return;
       }
-      state.playback.queue = nextQueue;
+      rememberServerQueue(nextQueue);
       renderAll();
       return;
     }
@@ -1284,7 +1398,7 @@
   }
 
   function wireDynamicActions() {
-    document.querySelectorAll(".queue-item[draggable='true']").forEach((node) => {
+    document.querySelectorAll(".queue-item[draggable='true'][data-url]").forEach((node) => {
       const getNodeUrl = () => decodeURIComponent(node.getAttribute("data-url") || "");
 
       node.ondragstart = (event) => {
@@ -1306,11 +1420,102 @@
         }
       };
     });
+    wireQueueReorderActions();
+  }
+
+  function getQueueDragIndex(event) {
+    const raw = event.dataTransfer?.getData(QUEUE_REORDER_DRAG_MIME) || "";
+    if (!raw && state.reorder.dragFromIndex === null) return null;
+    const index = Number(raw || state.reorder.dragFromIndex);
+    return Number.isInteger(index) ? index : null;
+  }
+
+  function isQueueReorderDrag(event) {
+    return Array.from(event.dataTransfer?.types || []).includes(QUEUE_REORDER_DRAG_MIME);
+  }
+
+  function clearQueueDropIndicators() {
+    document.querySelectorAll(".queue-row.drop-before, .queue-row.drop-after").forEach((node) => {
+      node.classList.remove("drop-before", "drop-after");
+    });
+  }
+
+  function getQueueDropIndex(node, event, fromIndex) {
+    const targetIndex = Number(node.getAttribute("data-queue-index"));
+    if (!Number.isInteger(targetIndex)) return fromIndex;
+
+    const rect = node.getBoundingClientRect();
+    const afterTarget = event.clientY > rect.top + (rect.height / 2);
+    const targetPosition = targetIndex + (afterTarget ? 1 : 0);
+    const adjusted = fromIndex < targetPosition ? targetPosition - 1 : targetPosition;
+    return Math.max(0, Math.min(state.playback.queue.length - 1, adjusted));
+  }
+
+  function showQueueDropIndicator(node, event) {
+    clearQueueDropIndicators();
+    const rect = node.getBoundingClientRect();
+    const afterTarget = event.clientY > rect.top + (rect.height / 2);
+    node.classList.add(afterTarget ? "drop-after" : "drop-before");
+  }
+
+  function wireQueueReorderActions() {
+    document.querySelectorAll(".queue-row").forEach((node) => {
+      if (node.getAttribute("data-reorderable") !== "true") return;
+
+      node.ondragstart = (event) => {
+        if (!canReorderQueue()) {
+          event.preventDefault();
+          return;
+        }
+        const index = Number(node.getAttribute("data-queue-index"));
+        if (!Number.isInteger(index)) {
+          event.preventDefault();
+          return;
+        }
+
+        state.reorder.dragFromIndex = index;
+        node.classList.add("dragging");
+        node.setAttribute("aria-grabbed", "true");
+        event.dataTransfer.setData(QUEUE_REORDER_DRAG_MIME, String(index));
+        event.dataTransfer.effectAllowed = "move";
+      };
+
+      node.ondragover = (event) => {
+        const fromIndex = getQueueDragIndex(event);
+        if (!canReorderQueue() || fromIndex === null) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = "move";
+        showQueueDropIndicator(node, event);
+      };
+
+      node.ondragleave = () => {
+        node.classList.remove("drop-before", "drop-after");
+      };
+
+      node.ondrop = (event) => {
+        const fromIndex = getQueueDragIndex(event);
+        if (!canReorderQueue() || fromIndex === null) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const toIndex = getQueueDropIndex(node, event, fromIndex);
+        clearQueueDropIndicators();
+        reorderQueue(fromIndex, toIndex);
+      };
+
+      node.ondragend = () => {
+        node.classList.remove("dragging");
+        node.setAttribute("aria-grabbed", "false");
+        state.reorder.dragFromIndex = null;
+        clearQueueDropIndicators();
+      };
+    });
   }
 
   function wireDropTarget() {
     if (!els.queuePanel) return;
     els.queuePanel.addEventListener("dragover", (event) => {
+      if (isQueueReorderDrag(event)) return;
       event.preventDefault();
       els.queuePanel.classList.add("drop-target");
     });
@@ -1318,6 +1523,7 @@
       els.queuePanel.classList.remove("drop-target");
     });
     els.queuePanel.addEventListener("drop", async (event) => {
+      if (isQueueReorderDrag(event)) return;
       event.preventDefault();
       els.queuePanel.classList.remove("drop-target");
       let url = event.dataTransfer.getData("text/plain") || "";

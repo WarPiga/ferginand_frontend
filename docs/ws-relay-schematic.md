@@ -135,6 +135,39 @@ search item, or dropping a track URL into the queue panel.
 `query` mirrors `url` for relay/host versions that route all playable input
 through a query-style field.
 
+### `cmd.reorder_queue`
+
+Triggered when an admin drags a queued track to a new queue position. The
+visible queue `index` values are one-based, so `fromIndex: 3` and `toIndex: 1`
+moves the third queued item to the top of the queue.
+
+```json
+{
+  "type": "cmd.reorder_queue",
+  "requestId": "uuid",
+  "payload": {
+    "fromIndex": 3,
+    "toIndex": 1
+  }
+}
+```
+
+Drag libraries that expose zero-based indices can send:
+
+```json
+{
+  "type": "cmd.reorder_queue",
+  "requestId": "uuid",
+  "payload": {
+    "oldIndex": 0,
+    "newIndex": 2
+  }
+}
+```
+
+Expected result is `ack`; a follow-up `queue.updated` or `snapshot` includes
+the reordered queue.
+
 ### `cmd.pause`
 
 Triggered by the play/pause button when current status state is `playing`.
@@ -554,4 +587,66 @@ The browser aggressively asks for fresh state:
   `getMessageNow`, `getMessageQueue`.
 - Search flow: `static/app.js`, `runTrackSearch`, `applySearchSnapshot`.
 - Seek flow: `static/app.js`, `seekToPosition`, `wirePlayheadSeek`.
+- Queue reorder flow: `static/app.js`, `reorderQueue`,
+  `wireQueueReorderActions`.
 - Static contract tests: `tests/test_static_contract.py`.
+
+## Queue Reorder Integration Notes
+
+Backend host support is implemented through `cmd.reorder_queue`. The remaining
+cross-project work is:
+
+### Render relay project
+
+- Add `cmd.reorder_queue` to the relay allowlist/known command set so browser
+  clients can forward it to the host.
+- Preserve the normal command envelope, including `requestId`, `payload`, and
+  role metadata. The host expects admin role metadata through
+  `meta.fromRole: "admin"` or top-level `role: "admin"`.
+- Keep permission enforcement on the relay side as well as the host side. Users
+  should not be able to reorder the shared queue unless they are admins.
+- Do not mutate queue order in the relay. The host owns queue state; the relay
+  should forward the command and fan out the resulting `queue.updated` or
+  `snapshot`.
+- Add relay contract tests that verify admin reorder commands are forwarded,
+  user reorder commands are rejected, and the command receives an `ack`.
+
+### Frontend project
+
+- Queued items are draggable within the queue list for admins. The current
+  track is not part of the reorderable queue.
+- On drop, the frontend sends the zero-based drag indices exposed by the
+  browser drag UI:
+
+```json
+{
+  "type": "cmd.reorder_queue",
+  "requestId": "uuid",
+  "payload": {
+    "oldIndex": 0,
+    "newIndex": 2
+  }
+}
+```
+
+- One-based `fromIndex`/`toIndex` remains documented for clients that expose
+  visible queue positions:
+
+```json
+{
+  "type": "cmd.reorder_queue",
+  "requestId": "uuid",
+  "payload": {
+    "fromIndex": 3,
+    "toIndex": 1
+  }
+}
+```
+
+- Drag controls are disabled for non-admin users and while a reorder command is
+  pending.
+- The frontend uses optimistic visual reordering and failed `ack` responses
+  revert to the last server queue. The server's `queue.updated` or `snapshot`
+  remains the source of truth.
+- Static frontend contract tests cover the command, admin gating, pending
+  state, failed `ack` rollback/error handling, and stable item-index data.
