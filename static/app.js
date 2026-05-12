@@ -573,7 +573,13 @@
       renderThumb(els.nowThumbLarge, null);
       syncPlayheadFromState();
     } else {
-      if (els.nowTitle) els.nowTitle.textContent = getTrackTitle(now);
+      if (els.nowTitle) {
+        const title = getTrackTitle(now);
+        const url = getTrackUrl(now);
+        els.nowTitle.innerHTML = url
+          ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>`
+          : escapeHtml(title);
+      }
       const bits = [];
       const source = getSourceLabel(now);
       if (source) bits.push(sourcePart(source));
