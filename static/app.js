@@ -12,6 +12,10 @@
   const RESYNC_RETRY_DELAYS_MS = [1000, 3000, 7000];
   const SEEK_RESET_MS = 2500;
   const QUEUE_REORDER_DRAG_MIME = "application/x-ferginand-queue-index";
+  const SOURCE_FAVICONS = {
+    YT: { name: "YouTube", url: "https://www.youtube.com/favicon.ico" },
+    SC: { name: "SoundCloud", url: "https://soundcloud.com/favicon.ico" },
+  };
   const $ = (id) => document.getElementById(id);
 
   const els = {
@@ -205,6 +209,34 @@
     }
 
     return "";
+  }
+
+  function sourcePart(label) {
+    return label ? { sourceLabel: label } : "";
+  }
+
+  function sourceBadgeHtml(label) {
+    const info = SOURCE_FAVICONS[label];
+    if (!info) return escapeHtml(label);
+
+    return `<span class="source-mark" title="${escapeHtml(info.name)}">
+      <img src="${escapeHtml(info.url)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">
+      <span>${escapeHtml(label)}</span>
+    </span>`;
+  }
+
+  function metaHtml(parts) {
+    return parts
+      .filter(Boolean)
+      .map((part) => part?.sourceLabel ? sourceBadgeHtml(part.sourceLabel) : escapeHtml(part))
+      .join('<span class="meta-sep"> • </span>');
+  }
+
+  function wireSourceIconFallbacks(root = document) {
+    root.querySelectorAll(".source-mark img").forEach((img) => {
+      img.onerror = () => { img.hidden = true; };
+      if (img.complete && img.naturalWidth === 0) img.hidden = true;
+    });
   }
 
   function secondsFromTimestamp(value) {
@@ -545,11 +577,11 @@
       if (els.nowTitle) els.nowTitle.textContent = getTrackTitle(now);
       const bits = [];
       const source = getSourceLabel(now);
-      if (source) bits.push(source);
+      if (source) bits.push(sourcePart(source));
       if (now.uploader) bits.push(String(now.uploader));
       const requestedBy = getRequestedBy(now);
       if (requestedBy && !["web", "web-user"].includes(requestedBy.toLowerCase())) bits.push(requestedBy);
-      if (els.nowSub) els.nowSub.textContent = bits.filter(Boolean).join(" • ");
+      if (els.nowSub) els.nowSub.innerHTML = metaHtml(bits);
       renderThumb(els.nowThumbLarge, now);
       syncPlayheadFromState();
     }
@@ -563,7 +595,7 @@
     const bits = [];
 
     const source = getTrackSourceLabel(track);
-    if (source) bits.push(source);
+    if (source) bits.push(sourcePart(source));
 
     if (track.uploader) bits.push(String(track.uploader));
     if (getDuration(track)) bits.push(fmtDur(getDuration(track)));
@@ -573,7 +605,7 @@
     // - played datetime
     // - completion / skipped / stopped status
     if (mode === "history") {
-      return bits.filter(Boolean).join(" • ");
+      return metaHtml(bits);
     }
 
     // Most played intentionally does not show:
@@ -583,7 +615,7 @@
       bits.push(`${getPlayCount(track)} play(s)`);
     }
 
-    return bits.filter(Boolean).join(" • ");
+    return metaHtml(bits);
   }
 
   function searchMeta(track) {
@@ -591,12 +623,12 @@
     const source = getTrackSourceLabel(track);
     const uploader = track?.uploader || track?.artist || track?.channel || "";
 
-    if (source) bits.push(source);
+    if (source) bits.push(sourcePart(source));
     if (uploader) bits.push(String(uploader));
     if (getDuration(track)) bits.push(fmtDur(getDuration(track)));
     if (getPlayCount(track)) bits.push(`${getPlayCount(track)} play(s)`);
 
-    return bits.filter(Boolean).join(" • ");
+    return metaHtml(bits);
   }
 
   function renderSearchResult(track) {
@@ -619,7 +651,7 @@
         ${thumbHtml}
         <div class="item-main">
           <div class="item-title">${linkHtml}</div>
-          <div class="meta">${escapeHtml(searchMeta(track))}</div>
+          <div class="meta">${searchMeta(track)}</div>
         </div>
         ${draggable ? '<span class="drag-pill">Drag</span>' : ''}
       </div>`;
@@ -766,6 +798,7 @@
       : '<div class="search-empty">No saved tracks matched that search.</div>';
     wireDynamicActions();
     fitRenderedThumbs(els.trackSearchResults);
+    wireSourceIconFallbacks(els.trackSearchResults);
   }
 
   function resetSearchResults(message = "") {
@@ -914,7 +947,7 @@
         ${thumbHtml}
         <div class="item-main">
           <div class="item-title">${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>` : escapeHtml(title)}</div>
-          <div class="meta">${escapeHtml(itemMeta(track, mode))}</div>
+          <div class="meta">${itemMeta(track, mode)}</div>
         </div>
         ${handleHtml}
       </div>`;
@@ -935,6 +968,7 @@
     renderSearchPanel();
     wireDynamicActions();
     fitRenderedThumbs();
+    wireSourceIconFallbacks();
   }
 
   function clearResyncTimers() {
