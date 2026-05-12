@@ -125,10 +125,15 @@ search item, or dropping a track URL into the queue panel.
   "requestId": "uuid",
   "payload": {
     "url": "https://...",
+    "query": "https://...",
+    "clientId": "browser/client name",
     "requestedBy": "web-user"
   }
 }
 ```
+
+`query` mirrors `url` for relay/host versions that route all playable input
+through a query-style field.
 
 ### `cmd.pause`
 
@@ -420,7 +425,8 @@ Accepted shapes:
 }
 ```
 
-Only top-level `items` is currently read.
+The browser accepts `items`, `history`, or `tracks` either top-level or under
+`payload`.
 
 ### `most_played.snapshot`
 
@@ -431,7 +437,8 @@ Only top-level `items` is currently read.
 }
 ```
 
-Only top-level `items` is currently read.
+The browser accepts `items`, `mostPlayed`, `most_played`, or `tracks` either
+top-level or under `payload`.
 
 ### `track_search.snapshot`
 
@@ -519,9 +526,9 @@ The browser aggressively asks for fresh state:
 - `cmd.get_history`, `cmd.get_most_played`, `cmd.search_tracks`, and `cmd.seek`
   also expect `ack`. Snapshot-style result messages alone are not enough to
   clear the pending command.
-- `history.snapshot` and `most_played.snapshot` only read top-level `items`.
-  A payload-wrapped `{ payload: { items: [] } }` shape is not handled for these
-  two messages.
+- `history.snapshot` and `most_played.snapshot` accept the common list aliases
+  documented above. If those tabs stay empty, check that the relay is sending a
+  snapshot message after the command, not only an `ack`.
 - `track_search.snapshot` should include the original `requestId`. If omitted,
   the UI may still accept it, but stale results are harder to reject.
 - `track_search.snapshot` should include the current query if available. If it

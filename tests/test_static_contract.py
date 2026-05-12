@@ -141,6 +141,17 @@ def test_relay_update_handlers_accept_payload_wrapped_messages():
     assert "messageLooksLikeNowPayload(payload)" in source
     assert "Array.isArray(payload.queue)" in source
     assert "Array.isArray(payload.items)" in source
+    assert 'getMessageItems(message, ["items", "history", "tracks"])' in source
+    assert 'getMessageItems(message, ["items", "mostPlayed", "most_played", "tracks"])' in source
+
+
+def test_enqueue_payload_includes_url_and_query_aliases():
+    source = APP_JS.read_text(encoding="utf-8")
+
+    assert 'sendCommand("cmd.enqueue", {' in source
+    assert "url: cleaned" in source
+    assert "query: cleaned" in source
+    assert "clientId: state.profile.clientName" in source
 
 
 def test_now_playing_metadata_does_not_duplicate_duration():

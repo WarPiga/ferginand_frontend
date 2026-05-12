@@ -889,10 +889,12 @@
     return [];
   }
 
-  function getMessageItems(message) {
+  function getMessageItems(message, keys = ["items"]) {
     const payload = objectPayload(message);
-    if (Array.isArray(message?.items)) return message.items;
-    if (Array.isArray(payload.items)) return payload.items;
+    for (const key of keys) {
+      if (Array.isArray(message?.[key])) return message[key];
+      if (Array.isArray(payload[key])) return payload[key];
+    }
     return [];
   }
 
@@ -984,13 +986,13 @@
     }
 
     if (type === "history.snapshot") {
-      state.playback.history = getMessageItems(message);
+      state.playback.history = getMessageItems(message, ["items", "history", "tracks"]);
       renderAll();
       return;
     }
 
     if (type === "most_played.snapshot") {
-      state.playback.mostPlayed = getMessageItems(message);
+      state.playback.mostPlayed = getMessageItems(message, ["items", "mostPlayed", "most_played", "tracks"]);
       renderAll();
       return;
     }
@@ -1181,7 +1183,9 @@
     if (!cleaned) return;
     await sendCommand("cmd.enqueue", {
       url: cleaned,
+      query: cleaned,
       requestedBy: state.profile.requestedBy || "web-user",
+      clientId: state.profile.clientName || state.profile.requestedBy || "web-client",
     });
     if (els.q && els.q.value.trim() === cleaned) els.q.value = "";
   }
