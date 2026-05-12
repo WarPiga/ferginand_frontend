@@ -221,7 +221,6 @@
 
     return `<span class="source-mark" title="${escapeHtml(info.name)}">
       <img src="${escapeHtml(info.url)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">
-      <span>${escapeHtml(label)}</span>
     </span>`;
   }
 
