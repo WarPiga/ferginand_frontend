@@ -1612,9 +1612,10 @@
       state.frontend.behind = Number(data.behind || 0) || 0;
       state.frontend.localSha = data.localSha || "";
       state.frontend.remoteSha = data.remoteSha || "";
+      state.frontend.updateError = data.updateError || "";
 
       if (showToast) {
-        toast(state.frontend.updateAvailable ? "Frontend update available." : "Frontend is already up to date.");
+        toast(state.frontend.updateError || (state.frontend.updateAvailable ? "Frontend update available." : "Frontend is already up to date."), !state.frontend.updateError);
       }
     } catch (err) {
       state.frontend.updateAvailable = false;

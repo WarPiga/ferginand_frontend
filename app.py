@@ -164,11 +164,16 @@ def _restart_process_after_delay(delay_seconds: float = 0.8) -> None:
             "try:",
             "    log('Restart helper started')",
             "    deadline = time.time() + 20",
+            "    port_free = False",
             "    while time.time() < deadline:",
             "        if port_is_free(host, port):",
             "            log(f'Port {host}:{port} is free')",
+            "            port_free = True",
             "            break",
             "        time.sleep(0.25)",
+            "    if not port_free:",
+            "        log(f'Port {host}:{port} stayed busy; not starting another frontend process')",
+            "        raise SystemExit(0)",
             "",
             "    creationflags = 0",
             "    if os.name == 'nt':",
@@ -224,7 +229,7 @@ def _shutdown_after_delay(delay_seconds: float = 0.8) -> None:
     threading.Thread(target=worker, daemon=True).start()
 
 
-def _get_update_status(fetch: bool = True) -> tuple[dict, int]:
+def _get_update_status(fetch: bool = True, soft_fetch_error: bool = False) -> tuple[dict, int]:
     if not shutil.which("git"):
         return {"ok": False, "error": "Git was not found on PATH"}, 500
 
@@ -234,6 +239,16 @@ def _get_update_status(fetch: bool = True) -> tuple[dict, int]:
     if fetch:
         code, output = _run_command(["git", "fetch", "--quiet"], timeout=120)
         if code != 0:
+            if soft_fetch_error:
+                payload, status_code = _get_update_status(fetch=False)
+                if status_code != 200:
+                    return payload, status_code
+                return {
+                    **payload,
+                    "fetchOk": False,
+                    "updateError": "git fetch failed",
+                    "log": output[-4000:],
+                }, 200
             return {
                 "ok": False,
                 "error": "git fetch failed",
@@ -270,6 +285,7 @@ def _get_update_status(fetch: bool = True) -> tuple[dict, int]:
 
     return {
         "ok": True,
+        "fetchOk": True,
         "updateAvailable": behind > 0,
         "ahead": ahead,
         "behind": behind,
@@ -284,7 +300,7 @@ def api_frontend_update_status():
     if not _is_local_request():
         return jsonify({"ok": False, "error": "Local requests only"}), 403
 
-    payload, status_code = _get_update_status(fetch=True)
+    payload, status_code = _get_update_status(fetch=True, soft_fetch_error=True)
     return jsonify(payload), status_code
 
 
