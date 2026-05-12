@@ -481,7 +481,7 @@
     img.alt = "";
     img.loading = "eager";
     img.decoding = "async";
-    img.src = url;
+    img.onload = () => fitThumbImage(img);
 
     img.onerror = () => {
       const placeholder = getPlaceholderThumbnail();
@@ -490,8 +490,37 @@
         container.classList.add("placeholder");
       }
     };
+    img.src = url;
 
     container.appendChild(img);
+    if (img.complete) fitThumbImage(img);
+  }
+
+  function fitThumbImage(img) {
+    const frame = img?.parentElement;
+    if (!img || !frame) return;
+
+    const frameRatio = frame.clientWidth && frame.clientHeight
+      ? frame.clientWidth / frame.clientHeight
+      : 1;
+    const imageRatio = img.naturalWidth && img.naturalHeight
+      ? img.naturalWidth / img.naturalHeight
+      : frameRatio;
+
+    if (imageRatio >= frameRatio) {
+      img.style.width = "100%";
+      img.style.height = "auto";
+    } else {
+      img.style.width = "auto";
+      img.style.height = "100%";
+    }
+  }
+
+  function fitRenderedThumbs(root = document) {
+    root.querySelectorAll(".thumb-frame img, .player-thumb img").forEach((img) => {
+      if (img.complete) fitThumbImage(img);
+      else img.addEventListener("load", () => fitThumbImage(img), { once: true });
+    });
   }
 
   function renderThumb(container, track) {
@@ -579,8 +608,8 @@
       ? `draggable="true" data-url="${encodeURIComponent(url)}"`
       : "";
     const thumbHtml = thumb
-      ? `<img src="${escapeHtml(thumb)}" alt="">`
-      : `<div class="thumb-fallback">♪</div>`;
+      ? `<span class="thumb-frame"><img src="${escapeHtml(thumb)}" alt=""></span>`
+      : `<span class="thumb-frame"><span class="thumb-fallback">♪</span></span>`;
     const linkHtml = url
       ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>`
       : escapeHtml(title);
@@ -736,6 +765,7 @@
       ? items.map(renderSearchResult).join("")
       : '<div class="search-empty">No saved tracks matched that search.</div>';
     wireDynamicActions();
+    fitRenderedThumbs(els.trackSearchResults);
   }
 
   function resetSearchResults(message = "") {
@@ -874,8 +904,8 @@
             : "Only admins can reorder the queue."
       : "";
     const thumbHtml = thumb
-      ? `<img src="${escapeHtml(thumb)}" alt="">`
-      : `<div class="thumb-fallback">♪</div>`;
+      ? `<span class="thumb-frame"><img src="${escapeHtml(thumb)}" alt=""></span>`
+      : `<span class="thumb-frame"><span class="thumb-fallback">♪</span></span>`;
     const handleHtml = isQueue
       ? `<span class="queue-drag-handle" aria-hidden="true">${canMove ? "Move" : ""}</span>`
       : "";
@@ -904,6 +934,7 @@
     renderList(els.mostPlayed, state.playback.mostPlayed, "most", "Empty");
     renderSearchPanel();
     wireDynamicActions();
+    fitRenderedThumbs();
   }
 
   function clearResyncTimers() {
@@ -1782,6 +1813,7 @@
     wireStaticActions();
     wireDropTarget();
     wirePlayheadSeek();
+    window.addEventListener("resize", () => fitRenderedThumbs());
     setInterval(tickPlayhead, 250);
 
     let cfg = { relayUrl: "", token: "", role: "user", requestedBy: "web-user", clientName: "web-client", serverId: "main", autoConnect: false };
