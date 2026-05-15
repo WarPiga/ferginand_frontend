@@ -10,6 +10,7 @@
   const SEARCH_RATE_WINDOW_MS = 2000;
   const SEARCH_RATE_MAX = 7;
   const RESYNC_RETRY_DELAYS_MS = [1000, 3000, 7000];
+  const FRONTEND_UPDATE_CHECK_MS = 5 * 60 * 1000;
   const SEEK_RESET_MS = 2500;
   const QUEUE_REORDER_DRAG_MIME = "application/x-ferginand-queue-index";
   const SOURCE_FAVICONS = {
@@ -30,8 +31,6 @@
     btnPlayPause: $("btnPlayPause"),
     btnSkip: $("btnSkip"),
     btnStop: $("btnStop"),
-    btnRefreshHistory: $("btnRefreshHistory"),
-    btnRefreshMost: $("btnRefreshMost"),
     btnUpdateFrontend: $("btnUpdateFrontend"),
     btnRestartFrontend: $("btnRestartFrontend"),
     btnShutdownFrontend: $("btnShutdownFrontend"),
@@ -65,6 +64,8 @@
     playheadReconnectSeq: 0,
     reconnectTimer: null,
     heartbeatTimer: null,
+    playheadTimer: null,
+    frontendUpdateTimer: null,
     resyncTimers: [],
     pending: new Map(),
     profile: {
@@ -111,6 +112,12 @@
       behind: 0,
       localSha: "",
       remoteSha: "",
+    },
+    page: {
+      visible: document.visibilityState !== "hidden",
+      renderPending: false,
+      needsFreshPlaybackState: false,
+      needsFrontendUpdateCheck: false,
     },
   };
 
@@ -373,8 +380,6 @@
       els.btnAdd,
       els.btnPlayPause,
       els.btnSkip,
-      els.btnRefreshHistory,
-      els.btnRefreshMost,
       els.trackSearchInput,
     ].forEach((el) => {
       if (el) el.disabled = !canUse;
@@ -964,7 +969,16 @@
     el.innerHTML = list.length ? list.map((item, index) => renderItem(item, mode, index, list.length)).join("") : `<div class="meta">${escapeHtml(emptyText)}</div>`;
   }
 
-  function renderAll() {
+  function isPageForeground() {
+    return document.visibilityState !== "hidden";
+  }
+
+  function renderAll(force = false) {
+    if (!force && !isPageForeground()) {
+      state.page.renderPending = true;
+      return;
+    }
+    state.page.renderPending = false;
     renderConnection();
     renderPlayer();
     renderList(els.queue, state.playback.queue, "queue", "Empty");
@@ -981,8 +995,12 @@
     state.resyncTimers = [];
   }
 
-  function requestPlaybackSnapshot() {
+  function requestPlaybackSnapshot(options = {}) {
     if (!state.connected) return;
+    if (!options.force && !isPageForeground()) {
+      state.page.needsFreshPlaybackState = true;
+      return;
+    }
     sendCommand(
       "cmd.get_snapshot",
       {},
@@ -995,9 +1013,14 @@
     });
   }
 
-  function requestFreshPlaybackState() {
+  function requestFreshPlaybackState(options = {}) {
     if (!state.connected) return;
-    requestPlaybackSnapshot();
+    if (!options.force && !isPageForeground()) {
+      state.page.needsFreshPlaybackState = true;
+      return;
+    }
+    state.page.needsFreshPlaybackState = false;
+    requestPlaybackSnapshot({ force: options.force });
     sendCommand("cmd.get_history", { limit: MAX_RENDERED_ITEMS }, { toastAck: false }).catch(() => {});
     sendCommand("cmd.get_most_played", { limit: MAX_RENDERED_ITEMS }, { toastAck: false }).catch(() => {});
   }
@@ -1020,6 +1043,10 @@
 
   function scheduleFreshPlaybackStateRequests() {
     clearResyncTimers();
+    if (!isPageForeground()) {
+      state.page.needsFreshPlaybackState = true;
+      return;
+    }
     requestPlaybackSnapshot();
     state.resyncTimers = RESYNC_RETRY_DELAYS_MS.map((delay) => setTimeout(requestFreshPlaybackState, delay));
   }
@@ -1669,8 +1696,14 @@
     btn.title = state.frontend.updateError || "No frontend update available";
   }
 
-  async function checkFrontendUpdate(showToast = false) {
+  async function checkFrontendUpdate(showToast = false, options = {}) {
+    if (!options.force && !showToast && !isPageForeground()) {
+      state.page.needsFrontendUpdateCheck = true;
+      return;
+    }
+
     try {
+      state.page.needsFrontendUpdateCheck = false;
       state.frontend.checkingUpdate = true;
       state.frontend.updateError = "";
       renderUpdateButton();
@@ -1817,8 +1850,6 @@
     };
     els.btnSkip.onclick = () => sendCommand("cmd.skip");
     els.btnStop.onclick = () => sendCommand("cmd.stop");
-    els.btnRefreshHistory.onclick = () => sendCommand("cmd.get_history", { limit: MAX_RENDERED_ITEMS }, { toastAck: false });
-    els.btnRefreshMost.onclick = () => sendCommand("cmd.get_most_played", { limit: MAX_RENDERED_ITEMS }, { toastAck: false });
 
     if (els.btnUpdateFrontend) {
       els.btnUpdateFrontend.onclick = () => updateFrontend();
@@ -1831,6 +1862,42 @@
     if (els.btnShutdownFrontend) {
       els.btnShutdownFrontend.onclick = () => shutdownFrontend();
     }
+  }
+
+  function startForegroundTimers() {
+    if (!isPageForeground()) return;
+    if (!state.playheadTimer) {
+      playhead.lastTickMs = Date.now();
+      state.playheadTimer = setInterval(tickPlayhead, 250);
+    }
+    if (!state.frontendUpdateTimer) {
+      state.frontendUpdateTimer = setInterval(() => checkFrontendUpdate(false), FRONTEND_UPDATE_CHECK_MS);
+    }
+  }
+
+  function stopForegroundTimers() {
+    if (state.playheadTimer) clearInterval(state.playheadTimer);
+    if (state.frontendUpdateTimer) clearInterval(state.frontendUpdateTimer);
+    state.playheadTimer = null;
+    state.frontendUpdateTimer = null;
+  }
+
+  function handleVisibilityChange() {
+    const visible = isPageForeground();
+    state.page.visible = visible;
+
+    if (!visible) {
+      stopForegroundTimers();
+      clearResyncTimers();
+      state.page.needsFreshPlaybackState = true;
+      return;
+    }
+
+    startForegroundTimers();
+    playhead.lastTickMs = Date.now();
+    renderAll(true);
+    requestFreshPlaybackState({ force: true });
+    checkFrontendUpdate(false, { force: true });
   }
 
   async function loadServerConfig() {
@@ -1853,16 +1920,16 @@
     wireDropTarget();
     wirePlayheadSeek();
     window.addEventListener("resize", () => fitRenderedThumbs());
-    setInterval(tickPlayhead, 250);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    startForegroundTimers();
 
     let cfg = { relayUrl: "", token: "", role: "user", requestedBy: "web-user", clientName: "web-client", serverId: "main", autoConnect: false };
     try { cfg = await loadServerConfig(); }
     catch (err) { console.warn(err); }
 
     state.profile = cfg;
-    renderAll();
+    renderAll(true);
     checkFrontendUpdate(false);
-    setInterval(() => checkFrontendUpdate(false), 5 * 60 * 1000);
 
     if (cfg.autoConnect !== false && cfg.relayUrl && cfg.token) connect();
   }
