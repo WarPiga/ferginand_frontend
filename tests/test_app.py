@@ -1,6 +1,9 @@
 # filename: tests/test_app.py
 from __future__ import annotations
 
+import json
+import contextlib
+
 import app as app_module
 from app import create_app
 
@@ -53,6 +56,41 @@ def test_invalid_role_falls_back_to_user(monkeypatch):
     response = client.get("/api/client-config")
     assert response.status_code == 200
     assert response.get_json()["role"] == "user"
+
+
+def test_favourites_are_saved_locally(monkeypatch):
+    favourites_file = app_module.PROJECT_ROOT / "favourites.test.json"
+    tmp_file = favourites_file.with_suffix(".json.tmp")
+    with contextlib.suppress(OSError):
+        favourites_file.unlink(missing_ok=True)
+    with contextlib.suppress(OSError):
+        tmp_file.unlink(missing_ok=True)
+    monkeypatch.setattr(app_module, "FAVOURITES_FILE", favourites_file)
+
+    client = app_module.app.test_client()
+    track = {"title": "Song A", "url": "https://example.test/song-a", "uploader": "Artist"}
+
+    try:
+        response = client.post("/api/favourites", json={"track": track, "favourited": True})
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["favourited"] is True
+        assert data["items"][0]["title"] == "Song A"
+        assert favourites_file.exists()
+        assert json.loads(favourites_file.read_text(encoding="utf-8"))["items"][0]["url"] == track["url"]
+
+        response = client.get("/api/favourites")
+        assert response.status_code == 200
+        assert response.get_json()["keys"] == [track["url"]]
+
+        response = client.post("/api/favourites", json={"track": track, "favourited": False})
+        assert response.status_code == 200
+        assert response.get_json()["items"] == []
+    finally:
+        with contextlib.suppress(OSError):
+            favourites_file.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            tmp_file.unlink(missing_ok=True)
 
 
 class FakeGitRoot:

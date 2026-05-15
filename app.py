@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sys
 import time
 import shutil
@@ -96,11 +97,123 @@ app = create_app()
 PROJECT_ROOT = Path(__file__).resolve().parent
 PYTHON_EXE = Path(sys.executable).resolve()
 REQUIREMENTS_FILE = PROJECT_ROOT / "requirements.txt"
+FAVOURITES_FILE = PROJECT_ROOT / "favourites.json"
+FAVOURITES_LOCK = threading.Lock()
+
+
+def _track_key(track: dict) -> str:
+    for key in (
+        "itemId",
+        "trackId",
+        "track_id",
+        "id",
+        "sourceId",
+        "source_id",
+        "url",
+        "webpage_url",
+        "webpageUrl",
+        "original_url",
+        "originalUrl",
+    ):
+        value = track.get(key)
+        if value:
+            return str(value).strip()
+
+    title = str(track.get("title") or track.get("name") or "").strip()
+    uploader = str(track.get("uploader") or track.get("artist") or track.get("channel") or "").strip()
+    return f"{title}|{uploader}".strip("|")
+
+
+def _read_favourites_unlocked() -> list[dict]:
+    if not FAVOURITES_FILE.exists():
+        return []
+
+    try:
+        data = json.loads(FAVOURITES_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    if not isinstance(data, dict):
+        return []
+
+    items = data.get("items", [])
+    if not isinstance(items, list):
+        return []
+
+    return [item for item in items if isinstance(item, dict) and _track_key(item)]
+
+
+def _write_favourites_unlocked(items: list[dict]) -> None:
+    payload = {
+        "version": 1,
+        "updatedAt": int(time.time()),
+        "items": items,
+    }
+    content = json.dumps(payload, ensure_ascii=False, indent=2)
+    tmp_path = FAVOURITES_FILE.with_suffix(".json.tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    try:
+        tmp_path.replace(FAVOURITES_FILE)
+    except PermissionError:
+        FAVOURITES_FILE.write_text(content, encoding="utf-8")
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+
+
+def _favourites_payload(items: list[dict]) -> dict:
+    return {
+        "ok": True,
+        "items": items,
+        "keys": [_track_key(item) for item in items],
+        "file": str(FAVOURITES_FILE),
+    }
 
 
 def _is_local_request() -> bool:
     remote_addr = request.remote_addr or ""
     return remote_addr in {"127.0.0.1", "::1", "localhost"}
+
+
+@app.get("/api/favourites")
+def api_favourites():
+    with FAVOURITES_LOCK:
+        items = _read_favourites_unlocked()
+    return jsonify(_favourites_payload(items))
+
+
+@app.post("/api/favourites")
+def api_update_favourite():
+    data = request.get_json(silent=True) or {}
+    track = data.get("track")
+    if not isinstance(track, dict):
+        return jsonify({"ok": False, "error": "A track object is required"}), 400
+
+    key = _track_key(track)
+    if not key:
+        return jsonify({"ok": False, "error": "Track is missing a stable identifier"}), 400
+
+    requested = data.get("favourited")
+    with FAVOURITES_LOCK:
+        items = _read_favourites_unlocked()
+        existing_index = next((index for index, item in enumerate(items) if _track_key(item) == key), None)
+        next_favourited = (existing_index is None) if requested is None else bool(requested)
+
+        if next_favourited:
+            saved_track = {**track, "favouritedAt": int(time.time())}
+            if existing_index is None:
+                items.insert(0, saved_track)
+            else:
+                items[existing_index] = {**items[existing_index], **saved_track}
+        elif existing_index is not None:
+            items.pop(existing_index)
+
+        _write_favourites_unlocked(items)
+
+    payload = _favourites_payload(items)
+    payload.update({"key": key, "favourited": next_favourited})
+    return jsonify(payload)
 
 
 def _run_command(args: list[str], timeout: int = 90) -> tuple[int, str]:

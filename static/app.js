@@ -44,6 +44,9 @@
     queue: $("queue"),
     history: $("history"),
     mostPlayed: $("mostPlayed"),
+    favs: $("favs"),
+    tabMostPlayed: $("tabMostPlayed"),
+    tabHistory: $("tabHistory"),
     stateLine: $("stateLine"),
     nowThumbLarge: $("nowThumbLarge"),
     nowTitle: $("nowTitle"),
@@ -86,6 +89,14 @@
       queue: [],
       history: [],
       mostPlayed: [],
+    },
+    favourites: {
+      items: [],
+      keys: new Set(),
+      saving: new Set(),
+    },
+    view: {
+      historyMostTab: "most",
     },
     reorder: {
       pending: false,
@@ -292,6 +303,53 @@
 
   function getTrackKey(t) {
     return String(t?.itemId || t?.trackId || t?.track_id || t?.id || t?.sourceId || t?.source_id || getTrackUrl(t) || getTrackTitle(t));
+  }
+
+  function getFavouriteKey(t) {
+    for (const field of [
+      "itemId",
+      "trackId",
+      "track_id",
+      "id",
+      "sourceId",
+      "source_id",
+      "url",
+      "webpage_url",
+      "webpageUrl",
+      "original_url",
+      "originalUrl",
+    ]) {
+      const value = t?.[field];
+      if (value) return String(value).trim();
+    }
+
+    const title = getTrackTitle(t).trim();
+    const uploader = String(t?.uploader || t?.artist || t?.channel || "").trim();
+    return `${title}|${uploader}`.replace(/^\|+|\|+$/g, "");
+  }
+
+  function isFavourited(track) {
+    const key = getFavouriteKey(track);
+    return !!key && state.favourites.keys.has(key);
+  }
+
+  function favouriteButtonHtml(track, mode, index = 0) {
+    const key = getFavouriteKey(track);
+    if (!key) return "";
+
+    const active = isFavourited(track);
+    const saving = state.favourites.saving.has(key);
+    const label = active ? "Remove from favourites" : "Add to favourites";
+    return `<button
+      class="favorite-toggle${active ? " active" : ""}"
+      type="button"
+      data-favourite-mode="${escapeHtml(mode)}"
+      data-favourite-index="${index}"
+      aria-label="${label}"
+      aria-pressed="${active ? "true" : "false"}"
+      title="${label}"
+      ${saving ? "disabled" : ""}
+    >${active ? "&#9829;" : "&#9825;"}</button>`;
   }
 
   function extractYouTubeId(url) {
@@ -581,9 +639,10 @@
       if (els.nowTitle) {
         const title = getTrackTitle(now);
         const url = getTrackUrl(now);
-        els.nowTitle.innerHTML = url
+        const titleHtml = url
           ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>`
           : escapeHtml(title);
+        els.nowTitle.innerHTML = `<span class="title-text">${titleHtml}</span>${favouriteButtonHtml(now, "now", 0)}`;
       }
       const bits = [];
       const source = getSourceLabel(now);
@@ -641,7 +700,7 @@
     return metaHtml(bits);
   }
 
-  function renderSearchResult(track) {
+  function renderSearchResult(track, index = 0) {
     const url = getTrackUrl(track);
     const title = getTrackTitle(track);
     const thumb = getThumb(track);
@@ -663,7 +722,10 @@
           <div class="item-title">${linkHtml}</div>
           <div class="meta">${searchMeta(track)}</div>
         </div>
-        ${draggable ? '<span class="drag-pill">Drag</span>' : ''}
+        <div class="item-actions">
+          ${favouriteButtonHtml(track, "search", index)}
+          ${draggable ? '<span class="drag-pill">Drag</span>' : ''}
+        </div>
       </div>`;
   }
 
@@ -804,7 +866,7 @@
     }
 
     els.trackSearchResults.innerHTML = items.length
-      ? items.map(renderSearchResult).join("")
+      ? items.map((item, index) => renderSearchResult(item, index)).join("")
       : '<div class="search-empty">No saved tracks matched that search.</div>';
     wireDynamicActions();
     fitRenderedThumbs(els.trackSearchResults);
@@ -925,7 +987,7 @@
     const thumb = getThumb(track);
     const isQueue = mode === "queue";
     const canMove = isQueue && canReorderQueue();
-    const draggable = canMove || mode === "history" || mode === "most";
+    const draggable = canMove || mode === "history" || mode === "most" || mode === "favs";
     const dragAttrs = canMove
       ? `draggable="true" aria-grabbed="false"`
       : draggable
@@ -959,6 +1021,9 @@
           <div class="item-title">${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>` : escapeHtml(title)}</div>
           <div class="meta">${itemMeta(track, mode)}</div>
         </div>
+        <div class="item-actions">
+          ${favouriteButtonHtml(track, mode, index)}
+        </div>
         ${handleHtml}
       </div>`;
   }
@@ -967,6 +1032,28 @@
     if (!el) return;
     const list = Array.isArray(items) ? items.slice(0, MAX_RENDERED_ITEMS) : [];
     el.innerHTML = list.length ? list.map((item, index) => renderItem(item, mode, index, list.length)).join("") : `<div class="meta">${escapeHtml(emptyText)}</div>`;
+  }
+
+  function renderHistoryMostTabs() {
+    const activeTab = state.view.historyMostTab === "history" ? "history" : "most";
+    if (els.tabMostPlayed) {
+      const active = activeTab === "most";
+      els.tabMostPlayed.classList.toggle("active", active);
+      els.tabMostPlayed.setAttribute("aria-selected", active ? "true" : "false");
+    }
+    if (els.tabHistory) {
+      const active = activeTab === "history";
+      els.tabHistory.classList.toggle("active", active);
+      els.tabHistory.setAttribute("aria-selected", active ? "true" : "false");
+    }
+    if (els.mostPlayed) {
+      els.mostPlayed.hidden = activeTab !== "most";
+      els.mostPlayed.classList.toggle("active", activeTab === "most");
+    }
+    if (els.history) {
+      els.history.hidden = activeTab !== "history";
+      els.history.classList.toggle("active", activeTab === "history");
+    }
   }
 
   function isPageForeground() {
@@ -984,6 +1071,8 @@
     renderList(els.queue, state.playback.queue, "queue", "Empty");
     renderList(els.history, state.playback.history, "history", "Empty");
     renderList(els.mostPlayed, state.playback.mostPlayed, "most", "Empty");
+    renderList(els.favs, state.favourites.items, "favs", "No favourites yet");
+    renderHistoryMostTabs();
     renderSearchPanel();
     wireDynamicActions();
     fitRenderedThumbs();
@@ -1495,6 +1584,18 @@
   }
 
   function wireDynamicActions() {
+    document.querySelectorAll(".favorite-toggle").forEach((node) => {
+      node.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleFavouriteFromButton(node);
+      };
+      node.ondragstart = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      };
+    });
+
     document.querySelectorAll(".queue-item[draggable='true'][data-url]").forEach((node) => {
       const getNodeUrl = () => decodeURIComponent(node.getAttribute("data-url") || "");
 
@@ -1666,6 +1767,66 @@
     }
 
     return data;
+  }
+
+  function setFavourites(items, keys = null) {
+    const nextItems = Array.isArray(items) ? items.filter((item) => !!getFavouriteKey(item)) : [];
+    state.favourites.items = nextItems;
+    state.favourites.keys = new Set(Array.isArray(keys) && keys.length ? keys.map(String) : nextItems.map(getFavouriteKey));
+  }
+
+  async function loadFavourites() {
+    try {
+      const data = await getLocalJson("/api/favourites");
+      setFavourites(data.items, data.keys);
+      renderAll(true);
+    } catch (err) {
+      toast(err.message || "Could not load favourites.", false);
+    }
+  }
+
+  async function updateFavourite(track, favourited) {
+    const key = getFavouriteKey(track);
+    if (!key || state.favourites.saving.has(key)) return;
+
+    state.favourites.saving.add(key);
+    renderAll();
+
+    try {
+      const response = await fetch("/api/favourites", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ track, favourited }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.error || `Request failed: ${response.status}`);
+      }
+      setFavourites(data.items, data.keys);
+    } catch (err) {
+      toast(err.message || "Could not update favourites.", false);
+    } finally {
+      state.favourites.saving.delete(key);
+      renderAll();
+    }
+  }
+
+  function getFavouriteTrack(mode, index) {
+    if (mode === "now") return state.playback.now;
+    if (mode === "search") return state.search.items[index];
+    if (mode === "queue") return state.playback.queue[index];
+    if (mode === "history") return state.playback.history[index];
+    if (mode === "most") return state.playback.mostPlayed[index];
+    if (mode === "favs") return state.favourites.items[index];
+    return null;
+  }
+
+  async function toggleFavouriteFromButton(button) {
+    const mode = button.getAttribute("data-favourite-mode") || "";
+    const index = Number(button.getAttribute("data-favourite-index") || 0);
+    const track = getFavouriteTrack(mode, Number.isInteger(index) ? index : 0);
+    if (!track) return;
+    await updateFavourite(track, !isFavourited(track));
   }
 
   function renderUpdateButton() {
@@ -1862,6 +2023,20 @@
     if (els.btnShutdownFrontend) {
       els.btnShutdownFrontend.onclick = () => shutdownFrontend();
     }
+
+    if (els.tabMostPlayed) {
+      els.tabMostPlayed.onclick = () => {
+        state.view.historyMostTab = "most";
+        renderHistoryMostTabs();
+      };
+    }
+
+    if (els.tabHistory) {
+      els.tabHistory.onclick = () => {
+        state.view.historyMostTab = "history";
+        renderHistoryMostTabs();
+      };
+    }
   }
 
   function startForegroundTimers() {
@@ -1928,6 +2103,7 @@
     catch (err) { console.warn(err); }
 
     state.profile = cfg;
+    await loadFavourites();
     renderAll(true);
     checkFrontendUpdate(false);
 

@@ -125,6 +125,10 @@ uninstall_startup_task.bat
 .env
 .env.*
 !.env.example
+favourites.json
+favourites.json.tmp
+favourites.test.json
+favourites.test.json.tmp
 
 .venv/
 start_ferginand_frontend.bat

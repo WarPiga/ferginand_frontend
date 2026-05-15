@@ -57,8 +57,8 @@ def test_index_has_phase6_panels():
     for element_id in [
         "queuePanel",
         "playerPanel",
-        "historyPanel",
-        "mostPlayedPanel",
+        "historyMostPanel",
+        "favsPanel",
         "hostBadge",
         "relayBadge",
         "trackSearchBox",
@@ -66,6 +66,9 @@ def test_index_has_phase6_panels():
         "trackSearchPanel",
         "trackSearchResults",
         "trackSearchStatus",
+        "tabMostPlayed",
+        "tabHistory",
+        "favs",
     ]:
         assert f'id="{element_id}"' in html
 
@@ -173,3 +176,17 @@ def test_queue_reorder_ui_contract():
     assert "{ oldIndex: from, newIndex: to }" in source
     assert "state.reorder.rollbackQueue" in source
     assert "Queue reorder denied by relay permissions." in source
+
+
+def test_favourites_ui_contract():
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert 'id="favsPanel"' in html
+    assert 'id="favs"' in html
+    assert 'id="tabMostPlayed"' in html
+    assert 'id="tabHistory"' in html
+    assert "favorite-toggle" in source
+    assert "favouriteButtonHtml" in source
+    assert 'fetch("/api/favourites"' in source
+    assert "state.favourites.items" in source

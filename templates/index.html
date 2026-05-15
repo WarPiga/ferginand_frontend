@@ -99,18 +99,22 @@
       </div>
     </section>
 
-    <section class="panel col" id="historyPanel">
+    <section class="panel col" id="historyMostPanel">
       <div class="panel-title">
-        <strong>History</strong>
+        <div class="tab-switch" role="tablist" aria-label="History and most played">
+          <button id="tabMostPlayed" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="mostPlayed">Most played</button>
+          <button id="tabHistory" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="history">History</button>
+        </div>
       </div>
-      <div id="history" class="list"></div>
+      <div id="mostPlayed" class="list tab-list active" role="tabpanel" aria-labelledby="tabMostPlayed"></div>
+      <div id="history" class="list tab-list" role="tabpanel" aria-labelledby="tabHistory" hidden></div>
     </section>
 
-    <section class="panel col" id="mostPlayedPanel">
+    <section class="panel col" id="favsPanel">
       <div class="panel-title">
-        <strong>Most played</strong>
+        <strong>Favs</strong>
       </div>
-      <div id="mostPlayed" class="list"></div>
+      <div id="favs" class="list"></div>
     </section>
   </main>
 
