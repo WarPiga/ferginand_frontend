@@ -48,6 +48,7 @@
     tabMostPlayed: $("tabMostPlayed"),
     tabHistory: $("tabHistory"),
     stateLine: $("stateLine"),
+    queueRemaining: $("queueRemaining"),
     nowThumbLarge: $("nowThumbLarge"),
     nowTitle: $("nowTitle"),
     nowSub: $("nowSub"),
@@ -164,6 +165,14 @@
     const m = Math.floor((s % 3600) / 60);
     const sec = s % 60;
     return (h ? `${h}:` : "") + String(m).padStart(2, "0") + ":" + String(sec).padStart(2, "0");
+  }
+
+  function fmtClockDur(seconds) {
+    const s = Math.max(0, Math.floor(Number(seconds) || 0));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
   }
 
   function fmtDate(unix) {
@@ -478,6 +487,7 @@
     const canSeek = canSeekPlayback(dur);
     if (els.playheadFill) els.playheadFill.style.width = dur > 0 ? `${(el / dur) * 100}%` : "0%";
     if (els.playheadText) els.playheadText.textContent = dur > 0 ? `${fmtDur(el)} / ${fmtDur(dur)}` : "";
+    updateQueueRemainingUI(el);
     if (els.playhead) {
       els.playhead.classList.toggle("seek-disabled", !canSeek);
       els.playhead.title = canSeek ? "Drag to seek" : "Seek is available while a track is loaded";
@@ -491,6 +501,50 @@
       els.playheadSeek.setAttribute("aria-valuenow", String(Math.round(el)));
       els.playheadSeek.setAttribute("aria-valuetext", dur > 0 ? `${fmtDur(el)} of ${fmtDur(dur)}` : "No track loaded");
     }
+  }
+
+  function getQueueRemaining(elapsed = playhead.elapsed) {
+    let seconds = 0;
+    let hasUnknownDuration = false;
+    const now = state.playback.now;
+
+    if (now) {
+      const duration = getDuration(now);
+      if (duration > 0) {
+        seconds += Math.max(0, duration - clampPlayheadPosition(elapsed, duration));
+      } else {
+        hasUnknownDuration = true;
+      }
+    }
+
+    (Array.isArray(state.playback.queue) ? state.playback.queue : []).forEach((track) => {
+      const duration = getDuration(track);
+      if (duration > 0) seconds += duration;
+      else hasUnknownDuration = true;
+    });
+
+    return { seconds, hasUnknownDuration };
+  }
+
+  function updateQueueRemainingUI(elapsed = playhead.elapsed) {
+    if (!els.queueRemaining) return;
+
+    const { seconds, hasUnknownDuration } = getQueueRemaining(elapsed);
+    const suffix = hasUnknownDuration ? "+" : "";
+    els.queueRemaining.textContent = `Queue: ${fmtClockDur(seconds)}${suffix}`;
+
+    if (seconds <= 0 && !hasUnknownDuration) {
+      els.queueRemaining.title = "Queue is empty.";
+      return;
+    }
+
+    const finishAt = new Date(Date.now() + Math.max(0, seconds) * 1000).toLocaleString();
+    const stateName = String(state.playback.status?.state || "").toLowerCase();
+    const timingPrefix = stateName === "playing"
+      ? "Queue finishes around"
+      : "If playback starts now, queue finishes around";
+    const unknownNote = hasUnknownDuration ? " Known total only; at least one track has no duration." : "";
+    els.queueRemaining.title = `${timingPrefix} ${finishAt}.${unknownNote}`;
   }
 
   function syncPlayheadFromState() {

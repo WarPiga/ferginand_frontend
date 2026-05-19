@@ -164,6 +164,17 @@ def test_now_playing_metadata_does_not_duplicate_duration():
     assert "bits.push(fmtDur(getDuration(now)))" not in source
 
 
+def test_player_queue_remaining_counter_contract():
+    source = APP_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert 'id="queueRemaining"' in html
+    assert "fmtClockDur" in source
+    assert "getQueueRemaining" in source
+    assert "updateQueueRemainingUI(el)" in source
+    assert "Queue finishes around" in source
+
+
 def test_queue_reorder_ui_contract():
     source = APP_JS.read_text(encoding="utf-8")
 
